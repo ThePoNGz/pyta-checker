@@ -19,9 +19,31 @@ export interface Write {
   value: unknown;
 }
 
+/** VS Code rejects writes to a setting no installed extension has registered. */
+export function isUnregisteredSettingError(error: unknown): boolean {
+  return String(error).includes('not a registered configuration');
+}
+
+function isIgnoreAll(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length === IGNORE_ALL.length &&
+    value.every((entry, index) => entry === IGNORE_ALL[index])
+  );
+}
+
+/** Our own sentinel is not a user value: record it as absent so disable removes it. */
+function withoutSentinel(current: Snapshot): Snapshot {
+  const cleaned: Snapshot = {};
+  for (const [section, value] of Object.entries(current)) {
+    cleaned[section] = isIgnoreAll(value) ? null : value;
+  }
+  return cleaned;
+}
+
 export function planEnable(current: Snapshot, saved: Snapshot | undefined): { saved: Snapshot; writes: Write[] } {
   return {
-    saved: saved ?? current,
+    saved: saved ?? withoutSentinel(current),
     writes: TARGETS.map((t) => ({ section: t.section, key: t.key, value: IGNORE_ALL })),
   };
 }

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { TARGETS, planDisable, planEnable, type Snapshot, type Write } from './onlyPytaLogic';
+import { TARGETS, isUnregisteredSettingError, planDisable, planEnable, type Snapshot, type Write } from './onlyPytaLogic';
 import { SECTION } from './settings';
 
 export const SAVED_KEY = 'pythonta.savedIgnore';
@@ -47,15 +47,25 @@ async function applyOnlyPytaNow(
     writes = plan.writes;
   } else {
     writes = planDisable(saved);
-    await context.globalState.update(SAVED_KEY, undefined);
   }
+  let restoreFailed = false;
   for (const write of writes) {
     try {
       await vscode.workspace.getConfiguration(write.section).update(write.key, write.value, vscode.ConfigurationTarget.Global);
       log.info(`${enabled ? 'Set' : 'Restored'} ${write.section}.${write.key}`);
     } catch (error) {
-      log.info(`Skipping ${write.section}.${write.key} (extension not installed?): ${String(error)}`);
+      if (isUnregisteredSettingError(error)) {
+        log.info(`Skipping ${write.section}.${write.key} (extension not installed)`);
+      } else {
+        restoreFailed = true;
+        log.warn(`Could not write ${write.section}.${write.key}: ${String(error)}`);
+      }
     }
+  }
+  // The snapshot is the only record of the user's original values, so drop it
+  // only once the restore has actually landed.
+  if (!enabled && !restoreFailed) {
+    await context.globalState.update(SAVED_KEY, undefined);
   }
   await restartOtherServers(log);
 }
