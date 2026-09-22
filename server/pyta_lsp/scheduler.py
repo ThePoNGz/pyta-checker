@@ -26,9 +26,9 @@ def runner_env() -> dict[str, str]:
     # beside the checked file is never imported. Ignored on 3.10, where the cwd
     # the server chooses is what limits the damage.
     env["PYTHONSAFEPATH"] = "1"
-    # Set for the spawn whatever the server's own environment says, so a stray
-    # MYPY_CACHE_DIR inherited from the editor cannot point the cache at a
-    # directory the student's checks would fight over.
+    # Pinned regardless of what the editor's environment says, so a stray
+    # MYPY_CACHE_DIR cannot point the cache at a directory the student's
+    # checks would fight over.
     env["MYPY_CACHE_DIR"] = mypy_cache_dir()
     return env
 

@@ -189,6 +189,7 @@ def run_check(
     report = io.StringIO()
     log = io.StringIO()
     old_cwd = os.getcwd()
+    old_cache = os.environ.get("MYPY_CACHE_DIR")
     parent_str = str(base_dir)
     inserted_path = False
     # python_ta's logging.basicConfig only binds a handler on the first call in a
@@ -214,7 +215,7 @@ def run_check(
         # python_ta spawns mypy with this process's cwd and environment, and mypy
         # writes a .mypy_cache into that cwd unless it is told otherwise. The
         # server's spawn env pins this; a check run in process has to pin it too.
-        os.environ.setdefault("MYPY_CACHE_DIR", mypy_cache_dir())
+        os.environ["MYPY_CACHE_DIR"] = mypy_cache_dir()
         if parent_str not in sys.path:
             sys.path.append(parent_str)
             inserted_path = True
@@ -243,6 +244,10 @@ def run_check(
         if inserted_path:
             sys.path.remove(parent_str)
         os.chdir(old_cwd)
+        if old_cache is None:
+            os.environ.pop("MYPY_CACHE_DIR", None)
+        else:
+            os.environ["MYPY_CACHE_DIR"] = old_cache
     result["log"] = log.getvalue()
     if not result["ok"]:
         result["error"] = _logged_error(result["log"]) or result["error"]
