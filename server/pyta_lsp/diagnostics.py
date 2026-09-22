@@ -20,6 +20,10 @@ _PYLINT_DIRS = {
     "I": "information",
 }
 _UNKNOWN_END_COLUMN = 10_000
+# Everything routed through astroid/pylint carries a UTF-8 byte offset. These two
+# do not: E9989 comes from pycodestyle and E0001 from SyntaxError.offset, both of
+# which count characters. They arrive mixed in the same message list.
+_CHARACTER_BASED_CODES = frozenset({"E9989", "E0001"})
 
 
 def docs_url(msg_id: str, symbol: str) -> str:
@@ -35,6 +39,20 @@ def _utf16_col(line: str, col: int) -> int:
     return len(line[:col].encode("utf-16-le")) // 2
 
 
+def _byte_to_char(line: str, byte_col: int) -> int:
+    """astroid/pylint report col_offset as a UTF-8 byte offset, not a character index."""
+    raw = line.encode("utf-8")
+    if byte_col >= len(raw):
+        return len(line)
+    return len(raw[:byte_col].decode("utf-8", errors="ignore"))
+
+
+def _source_col(line: str | None, col: int, byte_based: bool) -> int:
+    if line is None or not byte_based:
+        return col
+    return _byte_to_char(line, col)
+
+
 def _line_text(lines: Sequence[str] | None, index: int) -> str | None:
     if lines is None or index < 0 or index >= len(lines):
         return None
@@ -42,10 +60,16 @@ def _line_text(lines: Sequence[str] | None, index: int) -> str | None:
 
 
 def to_diagnostic(msg: dict[str, Any], lines: Sequence[str] | None) -> types.Diagnostic:
+    msg_id = str(msg.get("msg_id", ""))
+    byte_based = msg_id.upper() not in _CHARACTER_BASED_CODES
     line0 = max(int(msg.get("line") or 1) - 1, 0)
     col = max(int(msg.get("column") or 0), 0)
     start_text = _line_text(lines, line0)
-    start_char = _utf16_col(start_text, col) if start_text is not None else col
+    start_char = (
+        _utf16_col(start_text, _source_col(start_text, col, byte_based))
+        if start_text is not None
+        else col
+    )
 
     end_line_raw = msg.get("end_line")
     end_col_raw = msg.get("end_column")
@@ -59,12 +83,20 @@ def to_diagnostic(msg: dict[str, Any], lines: Sequence[str] | None) -> types.Dia
         # End column given without an end line: stays on the start line.
         end_line0 = line0
         end_col = max(int(end_col_raw), 0)
-        end_char = _utf16_col(start_text, end_col) if start_text is not None else end_col
+        end_char = (
+            _utf16_col(start_text, _source_col(start_text, end_col, byte_based))
+            if start_text is not None
+            else end_col
+        )
     else:
         end_line0 = max(int(end_line_raw) - 1, 0)
         end_text = _line_text(lines, end_line0)
         end_col = max(int(end_col_raw), 0)
-        end_char = _utf16_col(end_text, end_col) if end_text is not None else end_col
+        end_char = (
+            _utf16_col(end_text, _source_col(end_text, end_col, byte_based))
+            if end_text is not None
+            else end_col
+        )
 
     if end_line0 == line0:
         end_char = max(end_char, start_char)
@@ -75,7 +107,6 @@ def to_diagnostic(msg: dict[str, Any], lines: Sequence[str] | None) -> types.Dia
         if category in ("error", "fatal")
         else types.DiagnosticSeverity.Warning
     )
-    msg_id = str(msg.get("msg_id", ""))
     symbol = str(msg.get("symbol", ""))
     text = str(msg.get("msg", ""))
     message = f"{symbol}: {text}" if symbol else text
