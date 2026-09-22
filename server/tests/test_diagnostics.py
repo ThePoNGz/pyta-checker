@@ -75,8 +75,8 @@ def test_end_column_without_end_line_stays_on_start_line() -> None:
 
 def test_columns_are_utf16_units() -> None:
     lines = ["s = '😀😀'; y=1\n"]
-    # Python index of "y" is 10; the two emoji occupy 4 UTF-16 units instead of 2.
-    d = to_diagnostic(_msg(line=1, column=10, end_line=1, end_column=11), lines)
+    # pylint reports UTF-8 byte offsets: "y" is byte 16, character 10, UTF-16 unit 12.
+    d = to_diagnostic(_msg(line=1, column=16, end_line=1, end_column=17), lines)
     assert d.range.start.character == 12
     assert d.range.end.character == 13
 
@@ -95,3 +95,40 @@ def test_failure_diagnostic() -> None:
     assert d.code == FAILURE_CODE
     assert d.source == SOURCE
     assert d.message == "PythonTA could not check this file: boom"
+
+
+# Two non-ASCII characters before the reported column, so a byte offset and a
+# character offset disagree by exactly 2.
+_ACCENTED = 'CONSTANT = "café naïve"; badName = 1\n'
+_ACCENTED_PEP8 = 'X = "café naïve";Y=1\n'
+
+
+def test_pylint_columns_are_utf8_byte_offsets() -> None:
+    # badName starts at character 25; pylint reports byte offset 27.
+    d = to_diagnostic(
+        _msg(msg_id="C9103", symbol="naming-convention-violation",
+             line=1, column=27, end_line=1, end_column=34),
+        [_ACCENTED],
+    )
+    assert d.range.start.character == 25
+    assert d.range.end.character == 32
+
+
+def test_pycodestyle_columns_are_character_offsets() -> None:
+    # E9989 comes from pycodestyle, which counts characters, not bytes.
+    d = to_diagnostic(
+        _msg(msg_id="E9989", symbol="pep8-errors",
+             line=1, column=18, end_line=None, end_column=None),
+        [_ACCENTED_PEP8],
+    )
+    assert d.range.start.character == 18
+
+
+def test_synthesized_syntax_error_columns_are_character_offsets() -> None:
+    # E0001 comes from SyntaxError.offset, which counts characters.
+    d = to_diagnostic(
+        _msg(msg_id="E0001", symbol="syntax-error",
+             line=1, column=25, end_line=None, end_column=None),
+        [_ACCENTED],
+    )
+    assert d.range.start.character == 25
