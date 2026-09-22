@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -26,7 +27,10 @@ def runner_env() -> dict[str, str]:
 def default_spawn(argv: list[str], cwd: str) -> subprocess.Popen:
     kwargs: dict[str, Any] = {}
     if sys.platform == "win32":
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        # Its own process group / session so the whole tree can be killed at once.
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
     return subprocess.Popen(
         argv,
         cwd=cwd,
@@ -39,11 +43,34 @@ def default_spawn(argv: list[str], cwd: str) -> subprocess.Popen:
 
 
 def _kill(proc: subprocess.Popen) -> None:
-    if proc.poll() is None:
+    """Kill the runner and everything it spawned.
+
+    PythonTA runs mypy in a subprocess of its own with no timeout, so killing
+    only the direct child leaves that mypy alive and outside max_parallel.
+    """
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
         try:
-            proc.kill()
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=15,
+            )
+            return
+        except (OSError, subprocess.SubprocessError):
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            return
         except OSError:
             pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
 
 
 def _failure(error: str, log: str) -> dict[str, Any]:
