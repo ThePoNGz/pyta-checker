@@ -47,22 +47,6 @@ export function waitForPytaDiagnostics(
   });
 }
 
-export function waitForDiagnosticsChange(uri: vscode.Uri, timeoutMs = 120_000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      subscription.dispose();
-      reject(new Error(`timed out waiting for a diagnostics change on ${uri.fsPath}`));
-    }, timeoutMs);
-    const subscription = vscode.languages.onDidChangeDiagnostics((event) => {
-      if (event.uris.some((u) => u.toString() === uri.toString())) {
-        clearTimeout(timer);
-        subscription.dispose();
-        resolve();
-      }
-    });
-  });
-}
-
 export async function openFixture(name: string): Promise<vscode.Uri> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) {
