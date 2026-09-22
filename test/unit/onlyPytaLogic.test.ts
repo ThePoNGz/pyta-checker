@@ -56,18 +56,28 @@ describe('planEnable', () => {
 
 describe('planDisable', () => {
   it('restores saved values and removes keys that were absent', () => {
-    expect(planDisable({ python: ['src/generated'], basedpyright: null })).toEqual([
+    expect(
+      planDisable({ python: ['src/generated'], basedpyright: null }, { python: IGNORE_ALL, basedpyright: IGNORE_ALL }),
+    ).toEqual([
       { section: 'python', key: 'analysis.ignore', value: ['src/generated'] },
       { section: 'basedpyright', key: 'analysis.ignore', value: undefined },
     ]);
   });
 
   it('writes nothing when there is no snapshot', () => {
-    expect(planDisable(undefined)).toEqual([]);
+    expect(planDisable(undefined, { python: IGNORE_ALL, basedpyright: IGNORE_ALL })).toEqual([]);
+  });
+
+  it('skips a section that no longer holds our sentinel', () => {
+    // Either our write never landed or the user has changed it since. Either way
+    // the value on disk is theirs, not ours to write over.
+    expect(
+      planDisable({ python: ['p'], basedpyright: ['b'] }, { python: ['theirs'], basedpyright: IGNORE_ALL }),
+    ).toEqual([{ section: 'basedpyright', key: 'analysis.ignore', value: ['b'] }]);
   });
 
   it('leaves alone a section the snapshot does not cover', () => {
-    expect(planDisable({ basedpyright: ['b'] })).toEqual([
+    expect(planDisable({ basedpyright: ['b'] }, { python: IGNORE_ALL, basedpyright: IGNORE_ALL })).toEqual([
       { section: 'basedpyright', key: 'analysis.ignore', value: ['b'] },
     ]);
   });

@@ -59,11 +59,16 @@ export function newlyClaimed(saved: Snapshot | undefined, next: Snapshot): Set<s
   return new Set(Object.keys(next).filter((section) => saved === undefined || !(section in saved)));
 }
 
-export function planDisable(saved: Snapshot | undefined): Write[] {
+/**
+ * Restore only settings that still hold our sentinel. A section holding anything
+ * else was either never overwritten by us or has been changed since, so the value
+ * on disk is the user's and not ours to write over - whatever the snapshot claims.
+ */
+export function planDisable(saved: Snapshot | undefined, current: Snapshot): Write[] {
   if (!saved) {
     return [];
   }
-  return TARGETS.filter((t) => t.section in saved).map((t) => {
+  return TARGETS.filter((t) => t.section in saved && isIgnoreAll(current[t.section])).map((t) => {
     const previous = saved[t.section];
     return { section: t.section, key: t.key, value: previous === null ? undefined : previous };
   });

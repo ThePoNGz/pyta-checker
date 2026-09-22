@@ -43,15 +43,11 @@ async function applyOnlyPytaNow(
   log: vscode.LogOutputChannel,
 ): Promise<void> {
   const saved = context.globalState.get<Snapshot>(SAVED_KEY);
+  const current = readCurrent();
   let writes: Write[];
   let owed: Snapshot;
   let claiming: Set<string>;
   if (enabled) {
-    const current: Snapshot = {};
-    for (const target of TARGETS) {
-      const inspected = vscode.workspace.getConfiguration(target.section).inspect<unknown>(target.key);
-      current[target.section] = inspected?.globalValue === undefined ? null : inspected.globalValue;
-    }
     const plan = planEnable(current, saved);
     // Written before the overwrites so a crash mid-loop cannot lose the originals;
     // reconciled against what actually landed once the loop is done.
@@ -60,9 +56,10 @@ async function applyOnlyPytaNow(
     claiming = newlyClaimed(saved, plan.saved);
     writes = plan.writes;
   } else {
-    owed = { ...saved };
+    writes = planDisable(saved, current);
+    // Anything the snapshot claims but planDisable declined is the user's again.
+    owed = Object.fromEntries(writes.map((w) => [w.section, saved?.[w.section]]));
     claiming = new Set();
-    writes = planDisable(saved);
   }
   for (const write of writes) {
     try {
@@ -88,6 +85,15 @@ async function applyOnlyPytaNow(
   // the settings we have overwritten and still owe back.
   await context.globalState.update(SAVED_KEY, Object.keys(owed).length > 0 ? owed : undefined);
   await restartOtherServers(log);
+}
+
+function readCurrent(): Snapshot {
+  const current: Snapshot = {};
+  for (const target of TARGETS) {
+    const inspected = vscode.workspace.getConfiguration(target.section).inspect<unknown>(target.key);
+    current[target.section] = inspected?.globalValue === undefined ? null : inspected.globalValue;
+  }
+  return current;
 }
 
 async function restartOtherServers(log: vscode.LogOutputChannel): Promise<void> {
