@@ -853,3 +853,36 @@ def test_a_failure_from_a_superseded_check_does_not_overwrite_newer_results(tmp_
 
     assert published == [], "a superseded failure overwrote a newer check's diagnostics"
     assert statuses == ["checking"], statuses
+
+
+async def test_a_course_config_that_cannot_be_staged_does_not_lose_the_check(
+    client: LanguageClient, tmp_path
+) -> None:
+    # os.mkdir and copyfile both fail on things a student's folder really holds:
+    # a config/.pylintrc that is a directory, a read-only file, a full disk. The
+    # OSError reached the failure guard, so a file that used to be checked with
+    # the wrong config was not checked at all.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / ".pylintrc").mkdir()  # a directory copyfile cannot read
+    source = '"""Doc."""\nimport random\n\nX = random.random()\n'
+    path = tmp_path / "a1.py"
+    path.write_text(source, encoding="utf-8")
+    uri = path.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri, language_id="python", version=1, text=source
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in client.diagnostics[uri]}
+    assert FAILURE_CODE not in codes, "the check was abandoned over the config copy"
+    assert "E9999" in codes, f"the file was not checked at all: {codes}"
+    assert any(".pylintrc" in message.message for message in client.log_messages), (
+        [m.message for m in client.log_messages]
+    )

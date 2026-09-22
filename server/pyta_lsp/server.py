@@ -261,11 +261,20 @@ class PytaLanguageServer(LanguageServer):
                 # than the student's own run uses.
                 local_config = find_local_config(source_dir)
                 if local_config:
-                    os.mkdir(os.path.join(staging, "config"))
-                    shutil.copyfile(
-                        local_config,
-                        os.path.join(staging, "config", os.path.basename(local_config)),
-                    )
+                    try:
+                        os.mkdir(os.path.join(staging, "config"))
+                        shutil.copyfile(
+                            local_config,
+                            os.path.join(staging, "config", os.path.basename(local_config)),
+                        )
+                    except OSError as exc:
+                        # Checking against the wrong config is wrong; not checking
+                        # at all is worse, and that is what raising here meant.
+                        self.log_to_client(
+                            f"Could not copy {local_config} beside the staged file: {exc}; "
+                            "checking without it",
+                            types.MessageType.Warning,
+                        )
             argv = [sys.executable, "-m", "pyta_lsp.runner", target, "--source-dir", source_dir]
             if self.settings.config_path:
                 argv += ["--config", self.settings.config_path]
