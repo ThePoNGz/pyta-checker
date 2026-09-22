@@ -272,23 +272,28 @@ def test_cancel_all_stops_checks_that_are_still_queued_for_a_slot(tmp_path: Path
     assert all(value is None for value in results.values()), results
 
 
-class _Pipe:
-    def __init__(self) -> None:
+class _BlockingPipe:
+    """A pipe Popen's own reader thread still holds, so close() waits on it."""
+
+    def __init__(self, release: threading.Event) -> None:
+        self._release = release
         self.closed = False
 
     def close(self) -> None:
+        self._release.wait()
         self.closed = True
 
 
 class _StuckProc:
-    """A runner whose pipes a surviving grandchild still holds open."""
+    """A runner a surviving grandchild keeps alive, pipes and all."""
 
     pid = 424242
     returncode = None
 
-    def __init__(self) -> None:
-        self.stdout = _Pipe()
-        self.stderr = _Pipe()
+    def __init__(self, release: threading.Event) -> None:
+        self.stdout = _BlockingPipe(release)
+        self.stderr = _BlockingPipe(release)
+        self.reaped = threading.Event()
 
     def poll(self):
         return None
@@ -299,8 +304,8 @@ class _StuckProc:
     def communicate(self, timeout=None):
         import subprocess as sp
 
-        if timeout is None:
-            time.sleep(15)
+        if timeout is None:  # only a reaper with nothing else to do may wait here
+            self.reaped.set()
             return b"", b""
         raise sp.TimeoutExpired(cmd="runner", timeout=timeout)
 
@@ -345,25 +350,50 @@ def test_a_run_superseded_while_it_waits_for_a_slot_never_spawns(tmp_path: Path)
     assert results["queued"] is None
 
 
-def test_a_timed_out_run_closes_its_pipes_when_the_kill_does_not_take(
+def test_a_timed_out_run_hands_a_process_it_could_not_reap_to_a_reaper(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import subprocess as sp
-
+    # close() on a pipe waits for Popen's reader thread, and that thread is
+    # itself blocked reading a grandchild that survived the kill, so closing
+    # from the worker never returns: the check pool loses a thread and a slot
+    # for the rest of the session.
     _no_kill(monkeypatch)
-    scheduler = CheckScheduler(timeout=0.1, max_parallel=1)
-    proc = _StuckProc()
-    monkeypatch.setattr(
-        _StuckProc,
-        "communicate",
-        lambda self, timeout=None: (_ for _ in ()).throw(sp.TimeoutExpired("runner", timeout or 0)),
+    never_released = threading.Event()
+    proc = _StuckProc(never_released)
+    scheduler = CheckScheduler(spawn=lambda argv, cwd: proc, timeout=0.1, max_parallel=1)
+    results: dict[str, object] = {}
+
+    worker = threading.Thread(
+        target=lambda: results.update(r=scheduler.run("doc", ["runner"], str(tmp_path))),
+        daemon=True,  # a worker stuck in close() must not hold the suite open
     )
-    scheduler._spawn = lambda argv, cwd: proc  # type: ignore[assignment]
+    worker.start()
+    worker.join(2)
 
-    result = scheduler.run("doc", ["runner"], str(tmp_path))
+    assert not worker.is_alive(), "run() never returned; the worker is parked in close()"
+    result = results["r"]
+    assert result is not None and "timed out" in result["error"]  # type: ignore[index]
+    assert proc.reaped.wait(2), "the un-reaped process was dropped instead of handed on"
+    assert not proc.stdout.closed, "the worker must not close a pipe it cannot close"
 
-    assert result is not None and "timed out" in result["error"]
-    assert proc.stdout.closed and proc.stderr.closed, "the pipes were left open"
+
+def test_a_completed_run_leaves_no_pipe_open(tmp_path: Path) -> None:
+    # Nothing closes the pipes explicitly any more, so this is what says the
+    # ordinary path still does not leak a file descriptor per check.
+    from pyta_lsp.scheduler import default_spawn
+
+    procs: list = []
+
+    def capturing_spawn(argv: list[str], cwd: str):
+        proc = default_spawn(argv, cwd)
+        procs.append(proc)
+        return proc
+
+    scheduler = CheckScheduler(spawn=capturing_spawn, timeout=30)
+    result = scheduler.run("doc", _echo_argv("one"), str(tmp_path))
+
+    assert result is not None and result["ok"] is True
+    assert procs[0].stdout.closed and procs[0].stderr.closed
 
 
 class _QuietProc:

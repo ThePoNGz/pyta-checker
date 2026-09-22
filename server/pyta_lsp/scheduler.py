@@ -96,14 +96,23 @@ def _kill(proc: subprocess.Popen) -> None:
         pass
 
 
-def _close_pipes(proc: subprocess.Popen) -> None:
-    """A tree kill that did not take leaves a grandchild holding these open."""
-    for pipe in (proc.stdout, proc.stderr):
-        if pipe is not None:
-            try:
-                pipe.close()
-            except OSError:
-                pass
+def _reap_later(proc: subprocess.Popen) -> None:
+    """Hand a process the worker could not reap to a thread that can wait for it.
+
+    Neither reaping nor closing may happen on the worker: a tree kill that did
+    not take leaves a grandchild holding the write end of the pipes, so Popen's
+    reader threads never finish and both communicate() and pipe.close() block
+    until they do. An untimed communicate() on a daemon thread closes the pipes
+    itself once the process finally dies, and costs nothing if it never does.
+    """
+    threading.Thread(target=_reap, args=(proc,), name="pyta-reap", daemon=True).start()
+
+
+def _reap(proc: subprocess.Popen) -> None:
+    try:
+        proc.communicate()
+    except (OSError, ValueError):
+        pass
 
 
 def _failure(error: str, log: str) -> dict[str, Any]:
@@ -167,8 +176,7 @@ class CheckScheduler:
                     out, err = proc.communicate(timeout=5)
                 except subprocess.TimeoutExpired:
                     out, err = b"", b""
-                finally:
-                    _close_pipes(proc)
+                    _reap_later(proc)
                 timed_out = True
 
         with self._lock:
