@@ -78,13 +78,23 @@ def _argument(call: ast.Call, name: str) -> ast.expr | None:
     keyword = next((kw for kw in call.keywords if kw.arg == name), None)
     if keyword is not None:
         return keyword.value
+    if _unpacked(call) is not None:
+        return None
     index = _POSITIONS[name]
     return call.args[index] if index < len(call.args) else None
 
 
-def _starred(call: ast.Call) -> bool:
-    """A *args in the call: no argument can be placed by position any more."""
-    return any(isinstance(arg, ast.Starred) for arg in call.args)
+def _unpacked(call: ast.Call) -> str | None:
+    """The unpacking that hides an argument the call did not name.
+
+    *args shifts every position, **kwargs can carry any keyword at all; either
+    way an argument not given by keyword cannot be read out of this call.
+    """
+    if any(isinstance(arg, ast.Starred) for arg in call.args):
+        return "*args"
+    if any(kw.arg is None for kw in call.keywords):
+        return "**kwargs"
+    return None
 
 
 def _load_default_config(call: ast.Call, name: str) -> tuple[bool | None, list[str]]:
@@ -114,19 +124,23 @@ def extract_config(tree: ast.AST, base_dir: Path) -> ExtractedConfig:
 
     # The call that supplies the config is the one whose other arguments apply.
     name, call = next(
-        ((n, c) for n, c in calls if not _starred(c) and _argument(c, "config") is not None),
+        ((n, c) for n, c in calls if _argument(c, "config") is not None),
         calls[0],
     )
-    if _starred(call):
-        return ExtractedConfig(
-            "absent",
-            None,
-            name == "check_errors",
-            [f"line {call.lineno}: {name}() is called with *args, so its arguments cannot be read; using defaults"],
-        )
     load_default, warnings = _load_default_config(call, name)
     config_node = _argument(call, "config")
     if config_node is None:
+        unpacked = _unpacked(call)
+        if unpacked is not None:
+            return ExtractedConfig(
+                "absent",
+                None,
+                name == "check_errors",
+                [
+                    f"line {call.lineno}: {name}() is called with {unpacked}, "
+                    "so its arguments cannot be read; using defaults"
+                ],
+            )
         errors_only = calls[0][0] == "check_errors"
         return ExtractedConfig("absent", None, errors_only, warnings, load_default)
 
