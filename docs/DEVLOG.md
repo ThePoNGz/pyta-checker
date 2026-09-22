@@ -379,3 +379,34 @@ Recorded as a known limit rather than carried as a defect.
 Five passes. Eight findings, all real, seven fixed and one declined with the reasoning above. Two consecutive passes returned no comments, which is the same stopping rule the branch loop used.
 
 The pattern held from section 11: new findings kept appearing in the code written to fix earlier ones, twice in a row in the release workflow. The reviewer is most useful on code that has just changed, which is an argument for running it as a loop rather than as a gate.
+
+## 13. Review on a pull request (2026-09-22)
+
+The same reviewer, pointed at the same tree through a pull request instead of the CLI, found three more things. Worth recording the comparison, because it is the closest to controlled this project got:
+
+| | Code | Result |
+| --- | --- | --- |
+| CLI review, 14:25 | `fix/codebase-review` @ `ac7d371` | 0 comments, 5/5 |
+| PR review, 15:23 | `main`, the same content after merge | 3 findings, 3/5 |
+
+Same tool, same base commit, effectively the same code. What differed was the context: the pull request carried a written description of what was unverified, which the CLI run never had. That, or run-to-run variation. No controlled test was done, so this is an observation and not a mechanism.
+
+Findings across the round: staging broke package modules (`from . import helper` resolved to nothing in a temp copy, inventing an import error); a workspace-scoped `analysis.ignore` silently outranked the global write so Only-PythonTA reported success while doing nothing; the bundle was built and exercised only on 3.13 though the server supports 3.10; package modules with unsaved edits had disk results mapped onto the buffer; the explicit check command still blocked a protocol worker; and cleanup ran only on a cooperative shutdown, so an editor that crashed left the server and its mypy children running.
+
+Once `greptile.json` existed, findings began arriving phrased as "violates the repository requirement that…", citing the project's own rules rather than generic advice. That was the single highest-value change to how the tool behaves here.
+
+### A correction, and what it cost
+
+Midway through this round a process-leak bug was reported in this session with more confidence than the evidence carried. A probe drove a real server over stdio, opened four documents and sent `shutdown`/`exit`, and the process did not exit within 90 seconds. That was reported as a confirmed hang.
+
+It was not. The probe opened the server's stdout as a pipe and never read it. The server filled the pipe buffer, blocked writing, and so never processed `exit`. The deadlock was in the harness. Draining the pipe, the same server exits in 9.4 seconds. A pile of stray Python processes cited as corroboration were leftovers from killed test runs.
+
+Two process failures, both the same one:
+
+- The regression test written for it passed whether or not the fix was present. Watching a test fail first is the rule this project has followed throughout, and it was skipped precisely where the bug had already been decided to be real.
+- A measurement was reported from a harness that had not been validated.
+
+What survived was smaller and real: on shutdown the server left its check subprocesses running until they finished by themselves, 15.5s from `exit` to the process going away, now 9.4s. And the genuine gap, which the review found and the probe had entirely missed, was that none of that cleanup ran when the editor crashed rather than asking politely.
+
+Neither reviewer would have caught the bad probe: a wrong test and a wrong harness both read as correct. Only running it two ways and comparing numbers exposed it. The lesson is narrow and worth keeping — a test that has never been seen to fail has not been shown to test anything.
+
