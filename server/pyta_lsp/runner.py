@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import sys
+import tokenize
 import traceback
 from pathlib import Path
 from typing import Any, Mapping
@@ -46,6 +47,13 @@ def strip_cwd_from_path(cwd: str | None = None, path: list[str] = sys.path) -> N
     target = os.path.normcase(os.path.abspath(os.getcwd() if cwd is None else cwd))
     for entry in [p for p in path if os.path.normcase(os.path.abspath(p)) == target]:
         path.remove(entry)
+
+
+def _read_source(path: Path) -> str:
+    """Honour a PEP 263 coding cookie or BOM, the way python and pylint both do."""
+    with open(path, "rb") as handle:
+        encoding, _ = tokenize.detect_encoding(handle.readline)
+    return path.read_text(encoding=encoding)
 
 
 def _logged_error(log: str) -> str | None:
@@ -122,8 +130,8 @@ def run_check(
     file_path = file_path.resolve()
 
     try:
-        source = file_path.read_text(encoding="utf-8-sig")
-    except (OSError, UnicodeDecodeError) as exc:
+        source = _read_source(file_path)
+    except (OSError, UnicodeDecodeError, SyntaxError) as exc:
         result.update(ok=False, error=f"could not read file: {exc}")
         return result
 
