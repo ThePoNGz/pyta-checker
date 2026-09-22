@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   findPython: vi.fn(),
   started: [] as string[],
   stopped: [] as string[],
+  stopTimeouts: [] as (number | undefined)[],
 }));
 
 // Externalised by vitest, so its own require('vscode') escapes the stub alias.
@@ -28,8 +29,9 @@ vi.mock('../../src/client', () => ({
     start: async () => {
       mocks.started.push(pythonPath);
     },
-    stop: async () => {
+    stop: async (timeout?: number) => {
       mocks.stopped.push(pythonPath);
+      mocks.stopTimeouts.push(timeout);
     },
   }),
   requestCheck: async () => undefined,
@@ -75,10 +77,11 @@ describe('extension lifecycle', () => {
     resetStub();
     mocks.started.length = 0;
     mocks.stopped.length = 0;
+    mocks.stopTimeouts.length = 0;
     mocks.findPython.mockReset();
     // extension.ts keeps the client and restart state at module scope
     vi.resetModules();
-    extension = await import('../../src/extension');
+    extension = await import('../../src/extension.js');
   });
 
   it('starts a server on activate and stops it on deactivate', async () => {
@@ -89,6 +92,17 @@ describe('extension lifecycle', () => {
 
     await extension.deactivate();
     expect(mocks.stopped).toEqual(['python']);
+  });
+
+  it('gives the server long enough to shut its checks down cleanly', async () => {
+    // The default is 2s; a clean shutdown with checks in flight measures ~9.4s,
+    // and timing out leaves the runner and its mypy children behind.
+    mocks.findPython.mockResolvedValue({ path: 'python' });
+
+    await extension.activate(fakeContext());
+    await extension.deactivate();
+
+    expect(mocks.stopTimeouts).toEqual([15_000]);
   });
 
   it('does not start a server when deactivate lands mid-restart', async () => {

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { State, type LanguageClient } from 'vscode-languageclient/node';
 import { createClient, requestCheck } from './client';
 import { STATUS_NOTIFICATION, type StatusParams } from './client';
-import { SAVED_KEY, applyOnlyPyta, maybePromptFirstRun, toggleOnlyPyta } from './onlyPyta';
+import { SAVED_KEY, applyOnlyPyta, maybePromptFirstRun, syncOnlyPyta, toggleOnlyPyta } from './onlyPyta';
 import { findPython, onInterpreterChanged } from './python';
 import { getSettings } from './settings';
 import { StatusBar } from './statusBar';
@@ -24,13 +24,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('pythonta.showOutput', () => log.show(true)),
     vscode.commands.registerCommand('pythonta.restart', () => restartServer(context)),
     vscode.commands.registerCommand('pythonta.check', () => checkActiveFile()),
-    vscode.commands.registerCommand('pythonta.toggleOnlyPyta', () => toggleOnlyPyta()),
+    vscode.commands.registerCommand('pythonta.toggleOnlyPyta', () => toggleOnlyPyta(context, log)),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('pythonta.interpreter') || event.affectsConfiguration('pythonta.importStrategy')) {
         void restartServer(context);
       }
       if (event.affectsConfiguration('pythonta.hideOtherPythonDiagnostics')) {
-        applyOnlyPyta(getSettings().hideOtherPythonDiagnostics, context, log).catch((error) => log.error(`Only-PythonTA update failed: ${String(error)}`));
+        syncOnlyPyta(getSettings().hideOtherPythonDiagnostics, context, log).catch((error) => log.error(`Only-PythonTA update failed: ${String(error)}`));
       }
     }),
   );
@@ -45,12 +45,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const settings = getSettings();
   if (settings.hideOtherPythonDiagnostics || context.globalState.get(SAVED_KEY)) {
     try {
-      await applyOnlyPyta(settings.hideOtherPythonDiagnostics, context, log);
+      await applyOnlyPyta(settings.hideOtherPythonDiagnostics, context, log, { silent: true });
     } catch (error) {
       log.error(`Only-PythonTA setup failed: ${String(error)}`);
     }
   }
-  void maybePromptFirstRun(context);
+  maybePromptFirstRun(context).catch((error) => log.error(`First-run prompt failed: ${String(error)}`));
 }
 
 export async function deactivate(): Promise<void> {
@@ -111,7 +111,9 @@ async function stopServer(): Promise<void> {
   client = undefined;
   if (current) {
     try {
-      await current.stop();
+      // The server kills its runner subprocess trees on the way out; a clean shutdown
+      // with checks in flight measures around 9.4s, well past the 2s default.
+      await current.stop(15_000);
     } catch (error) {
       log.warn(`Error stopping PythonTA server: ${String(error)}`);
     }

@@ -52,7 +52,13 @@ export function planEnable(current: Snapshot, saved: Snapshot | undefined): { sa
   }
   return {
     saved: next,
-    writes: TARGETS.map((t) => ({ section: t.section, key: t.key, value: IGNORE_ALL })),
+    // A section already holding the sentinel needs no write: re-writing it on every
+    // window open restarts the other language server for no change.
+    writes: TARGETS.filter((t) => !isIgnoreAll(current[t.section])).map((t) => ({
+      section: t.section,
+      key: t.key,
+      value: IGNORE_ALL,
+    })),
   };
 }
 

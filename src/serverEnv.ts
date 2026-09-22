@@ -12,7 +12,7 @@ export function serverEnv(
   base: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   const libs = bundledLibsDir(extensionPath);
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...base,
     PYTHONPATH: base.PYTHONPATH ? `${libs}${path.delimiter}${base.PYTHONPATH}` : libs,
     PYTHONIOENCODING: 'utf-8',
@@ -21,4 +21,10 @@ export function serverEnv(
     PYTA_LSP_LIBS: libs,
     PYTA_LSP_IMPORT_STRATEGY: importStrategy,
   };
+  // Inherited from whatever shell launched VS Code, these point at an environment
+  // that is not the selected interpreter and outrank it.
+  for (const key of ['PYTHONHOME', 'VIRTUAL_ENV', 'CONDA_PREFIX', 'PYTHONSTARTUP']) {
+    delete env[key];
+  }
+  return env;
 }

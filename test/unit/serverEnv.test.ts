@@ -16,6 +16,23 @@ describe('serverEnv', () => {
     expect(env.PYTA_LSP_IMPORT_STRATEGY).toBe('useBundled');
     expect(env.PATH).toBe('x');
   });
+  it('drops interpreter variables inherited from the launching shell', () => {
+    // VS Code launched from a terminal with one venv active passes its variables
+    // down, and they win over the interpreter the student actually selected.
+    const env = serverEnv(EXT, 'useBundled', {
+      PATH: 'x',
+      PYTHONHOME: '/venv-a',
+      VIRTUAL_ENV: '/venv-a',
+      CONDA_PREFIX: '/conda/a',
+      PYTHONSTARTUP: '/home/s/.pythonrc',
+    });
+    expect(env.PYTHONHOME).toBeUndefined();
+    expect(env.VIRTUAL_ENV).toBeUndefined();
+    expect(env.CONDA_PREFIX).toBeUndefined();
+    expect(env.PYTHONSTARTUP).toBeUndefined();
+    expect(env.PATH).toBe('x');
+  });
+
   it('sets PYTHONPATH to libs alone when none existed', () => {
     const env = serverEnv(EXT, 'fromEnvironment', {});
     expect(env.PYTHONPATH).toBe(bundledLibsDir(EXT));

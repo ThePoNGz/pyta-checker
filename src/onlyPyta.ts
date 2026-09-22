@@ -13,35 +13,87 @@ import { SECTION } from './settings';
 export const SAVED_KEY = 'pythonta.savedIgnore';
 export const PROMPTED_KEY = 'pythonta.promptedOnlyPyta';
 const SETTING = 'hideOtherPythonDiagnostics';
+const SHOW_OUTPUT = 'Show Output';
+
+export interface ApplyOutcome {
+  /** Writes that changed something; nothing else is worth a language-server restart. */
+  landed: number;
+  /** Writes refused for a reason other than the target extension being absent. */
+  failed: number;
+  /** Targets a workspace value outranks, where the global write changes nothing. */
+  blocked: string[];
+}
+
+export interface ApplyOptions {
+  /** Activation and the toggle report for themselves. */
+  silent?: boolean;
+}
+
+function isHideEnabled(): boolean {
+  return vscode.workspace.getConfiguration(SECTION).get<boolean>(SETTING, false);
+}
 
 export async function maybePromptFirstRun(context: vscode.ExtensionContext): Promise<void> {
   if (context.globalState.get<boolean>(PROMPTED_KEY) || process.env.PYTA_SKIP_PROMPT) {
     return;
   }
   await context.globalState.update(PROMPTED_KEY, true);
+  // Settings Sync carries the setting between machines but not globalState, so on a
+  // second machine it can already be on with nothing recorded here.
+  if (isHideEnabled()) {
+    return;
+  }
   const choice = await vscode.window.showInformationMessage(
     "PythonTA Checker: hide Pylance and basedpyright problems so only PythonTA's show? Autocomplete keeps working. Change it later with 'PythonTA: Toggle Only-PythonTA Problems'.",
     'Yes',
     'No',
   );
-  if (choice === 'Yes') {
-    await vscode.workspace.getConfiguration(SECTION).update(SETTING, true, vscode.ConfigurationTarget.Global);
+  if (choice !== 'Yes' && choice !== 'No') {
+    return;
   }
+  // The prompt can sit open while the toggle changes the same setting, so the answer
+  // is compared against the value now rather than the one read above.
+  const wanted = choice === 'Yes';
+  if (isHideEnabled() === wanted) {
+    return;
+  }
+  await vscode.workspace.getConfiguration(SECTION).update(SETTING, wanted, vscode.ConfigurationTarget.Global);
 }
 
-let applying: Promise<void> = Promise.resolve();
+let applying: Promise<unknown> = Promise.resolve();
+let lastRequested: boolean | undefined;
+let warnedScoped = false;
 
-export function applyOnlyPyta(enabled: boolean, context: vscode.ExtensionContext, log: vscode.LogOutputChannel): Promise<void> {
-  const next = applying.then(() => applyOnlyPytaNow(enabled, context, log));
+export function applyOnlyPyta(
+  enabled: boolean,
+  context: vscode.ExtensionContext,
+  log: vscode.LogOutputChannel,
+  options: ApplyOptions = {},
+): Promise<ApplyOutcome> {
+  lastRequested = enabled;
+  const next = applying.then(() => applyOnlyPytaNow(enabled, context, log, options));
   applying = next.catch(() => undefined);
   return next;
+}
+
+/** The configuration listener also fires for the toggle's own write, which has already been applied. */
+export function syncOnlyPyta(
+  enabled: boolean,
+  context: vscode.ExtensionContext,
+  log: vscode.LogOutputChannel,
+): Promise<ApplyOutcome | undefined> {
+  if (enabled === lastRequested) {
+    return Promise.resolve(undefined);
+  }
+  return applyOnlyPyta(enabled, context, log);
 }
 
 async function applyOnlyPytaNow(
   enabled: boolean,
   context: vscode.ExtensionContext,
   log: vscode.LogOutputChannel,
-): Promise<void> {
+  options: ApplyOptions,
+): Promise<ApplyOutcome> {
   const saved = context.globalState.get<Snapshot>(SAVED_KEY);
   const current = readCurrent();
   let writes: Write[];
@@ -61,9 +113,12 @@ async function applyOnlyPytaNow(
     owed = Object.fromEntries(writes.map((w) => [w.section, saved?.[w.section]]));
     claiming = new Set();
   }
+  let landed = 0;
+  let failed = 0;
   for (const write of writes) {
     try {
       await vscode.workspace.getConfiguration(write.section).update(write.key, write.value, vscode.ConfigurationTarget.Global);
+      landed += 1;
       if (!enabled) {
         delete owed[write.section];
       }
@@ -77,6 +132,7 @@ async function applyOnlyPytaNow(
       if (isUnregisteredSettingError(error)) {
         log.info(`Skipping ${write.section}.${write.key} (extension not installed)`);
       } else {
+        failed += 1;
         log.warn(`Could not write ${write.section}.${write.key}: ${String(error)}`);
       }
     }
@@ -89,26 +145,41 @@ async function applyOnlyPytaNow(
   } catch (error) {
     log.warn(`Could not update the saved ignore snapshot: ${String(error)}`);
   }
-  if (enabled) {
-    reportScopedOverrides(log);
+  // A workspace value outranks the user setting whichever way the toggle went.
+  const blocked = scopedOverrides();
+  if (blocked.length > 0) {
+    log.warn(`Only-PythonTA cannot ${enabled ? 'hide' : 'restore'} ${join(blocked)}: a workspace setting outranks the user setting.`);
+    // Activation re-applies on every window open, so an unconditional toast here
+    // reappears forever with nothing new to report.
+    if (!options.silent && !warnedScoped) {
+      warnedScoped = true;
+      void vscode.window.showWarningMessage(scopedOverrideMessage(blocked, enabled));
+    }
   }
-  await restartOtherServers(log);
+  // Restarting the other language servers throws away their analysis, so it is worth
+  // doing only when a setting actually changed.
+  if (landed > 0) {
+    await restartOtherServers(log);
+  }
+  return { landed, failed, blocked };
 }
 
 /** Global writes lose to a workspace value, so the toggle would silently do nothing. */
-function reportScopedOverrides(log: vscode.LogOutputChannel): void {
-  const blocked = TARGETS.filter((target) => {
+function scopedOverrides(): string[] {
+  return TARGETS.filter((target) => {
     const inspected = vscode.workspace.getConfiguration(target.section).inspect<unknown>(target.key);
     return inspected?.workspaceValue !== undefined || inspected?.workspaceFolderValue !== undefined;
   }).map((target) => `${target.section}.${target.key}`);
-  if (blocked.length === 0) {
-    return;
-  }
-  const names = blocked.join(' and ');
-  log.warn(`Only-PythonTA cannot hide ${names}: a workspace setting outranks the user setting.`);
-  void vscode.window.showWarningMessage(
-    `PythonTA: ${names} is set for this workspace, so those problems stay visible. Remove it from the workspace settings to hide them.`,
-  );
+}
+
+function join(names: string[]): string {
+  return names.join(' and ');
+}
+
+function scopedOverrideMessage(blocked: string[], enabled: boolean): string {
+  const many = blocked.length > 1;
+  const state = enabled ? 'visible' : 'hidden';
+  return `PythonTA: ${join(blocked)} ${many ? 'are' : 'is'} set for this workspace, so those problems stay ${state}. Remove ${many ? 'them' : 'it'} from the workspace settings to change that.`;
 }
 
 function readCurrent(): Snapshot {
@@ -134,16 +205,52 @@ async function restartOtherServers(log: vscode.LogOutputChannel): Promise<void> 
   }
 }
 
-export async function toggleOnlyPyta(): Promise<void> {
+export async function toggleOnlyPyta(
+  context: vscode.ExtensionContext,
+  log: vscode.LogOutputChannel,
+): Promise<void> {
   const config = vscode.workspace.getConfiguration(SECTION);
-  const current = config.get<boolean>(SETTING, false);
+  const enabled = !config.get<boolean>(SETTING, false);
+  // The configuration event can arrive while the write below is still in flight, so
+  // this value is claimed before it: the listener then has nothing left to apply.
+  const previous = lastRequested;
+  lastRequested = enabled;
   try {
-    await config.update(SETTING, !current, vscode.ConfigurationTarget.Global);
+    await config.update(SETTING, enabled, vscode.ConfigurationTarget.Global);
   } catch {
+    lastRequested = previous;
     void vscode.window.showErrorMessage('PythonTA: could not change the setting.');
     return;
   }
+  // The writes that do the work happen here rather than through the configuration
+  // listener, so the toggle reports what actually landed.
+  let outcome: ApplyOutcome;
+  try {
+    outcome = await applyOnlyPyta(enabled, context, log, { silent: true });
+  } catch (error) {
+    log.error(`Only-PythonTA update failed: ${String(error)}`);
+    await showApplyFailure();
+    return;
+  }
+  if (outcome.failed > 0) {
+    await showApplyFailure();
+    return;
+  }
+  if (outcome.blocked.length > 0) {
+    void vscode.window.showWarningMessage(scopedOverrideMessage(outcome.blocked, enabled));
+    return;
+  }
   void vscode.window.showInformationMessage(
-    current ? 'PythonTA: other Python problems are visible again.' : 'PythonTA: showing only PythonTA problems.',
+    enabled ? 'PythonTA: showing only PythonTA problems.' : 'PythonTA: other Python problems are visible again.',
   );
+}
+
+async function showApplyFailure(): Promise<void> {
+  const choice = await vscode.window.showErrorMessage(
+    "PythonTA: could not update all of the other extensions' settings. The log says which.",
+    SHOW_OUTPUT,
+  );
+  if (choice) {
+    await vscode.commands.executeCommand('pythonta.showOutput');
+  }
 }
