@@ -2015,7 +2015,8 @@ def cmd_verify() -> int:
         "import sys; sys.path.insert(0, sys.argv[1]); "
         "import python_ta, pygls, pyta_lsp, aiohttp, markupsafe, jinja2, pylint, astroid; "
         "assert python_ta.__file__.startswith(sys.argv[1]), python_ta.__file__; "
-        "print('bundle ok: python-ta', python_ta.__version__, '| pygls', pygls.__version__)"
+        "from importlib.metadata import version; "
+        "print('bundle ok: python-ta', python_ta.__version__, '| pygls', version('pygls'))"
     )
     run([sys.executable, "-I", "-c", code, LIBS])
     return 0
