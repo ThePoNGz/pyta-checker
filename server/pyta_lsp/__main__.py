@@ -20,7 +20,12 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging()
     from .server import server
 
-    server.start_io()
+    try:
+        server.start_io()
+    finally:
+        # The editor can disappear without sending shutdown, and the check threads
+        # are not daemons, so nothing else would release them.
+        server.stop_checks()
     return 0
 
 
