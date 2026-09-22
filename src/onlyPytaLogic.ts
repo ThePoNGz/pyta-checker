@@ -32,20 +32,22 @@ function isIgnoreAll(value: unknown): boolean {
   );
 }
 
-/** Our own sentinel is not a user value: record it as absent so disable removes it. */
-function asOriginal(value: unknown): unknown {
-  return value === undefined || isIgnoreAll(value) ? null : value;
-}
-
 /**
  * A section present in the snapshot is one we have overwritten and still owe back.
- * Sections already restored are absent, so their current value is the user's own.
+ *
+ * Anything on disk that is not our sentinel came from the user, so it replaces what
+ * we recorded - they may have edited it since, with Only-PythonTA on or off. Our own
+ * sentinel says nothing about their value, so it never overwrites a recorded one, and
+ * stands for "absent" when there is nothing recorded yet.
  */
 export function planEnable(current: Snapshot, saved: Snapshot | undefined): { saved: Snapshot; writes: Write[] } {
   const next: Snapshot = { ...saved };
   for (const target of TARGETS) {
-    if (!(target.section in next)) {
-      next[target.section] = asOriginal(current[target.section]);
+    const value = current[target.section];
+    if (!isIgnoreAll(value)) {
+      next[target.section] = value === undefined ? null : value;
+    } else if (!(target.section in next)) {
+      next[target.section] = null;
     }
   }
   return {
