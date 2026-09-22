@@ -113,3 +113,40 @@ def test_apply_import_strategy_noop_when_bundled(tmp_path: Path) -> None:
     path = [libs, "second"]
     apply_import_strategy({ENV_LIBS: libs, ENV_STRATEGY: "useBundled"}, path)
     assert path == [libs, "second"]
+
+
+def test_log_captures_logging_output_across_repeated_calls(fixtures: Path, monkeypatch) -> None:
+    import logging
+    import sys
+    import types
+
+    def fake_check_all(path, config=None, output=None, pylint_args=None):
+        logging.getLogger("python_ta.fake").warning("logged by pyta")
+        output.write("[]")
+
+    fake = types.ModuleType("python_ta")
+    fake.__version__ = "0.0-fake"
+    fake.__file__ = str(fixtures / "python_ta.py")
+    fake.check_all = fake_check_all
+    fake.check_errors = fake_check_all
+    monkeypatch.setitem(sys.modules, "python_ta", fake)
+
+    first = run_check(fixtures / "clean.py")
+    second = run_check(fixtures / "clean.py")
+    assert first["ok"] and second["ok"]
+    assert "logged by pyta" in first["log"]
+    assert "logged by pyta" in second["log"]
+
+
+def test_sys_path_is_restored_after_check(fixtures: Path) -> None:
+    import sys
+
+    before = list(sys.path)
+    run_check(fixtures / "clean.py")
+    assert sys.path == before
+
+
+def test_syntax_error_message_carries_full_key_set(fixtures: Path) -> None:
+    msg = run_check(fixtures / "syntax_error.py")["messages"][0]
+    for key in ("abspath", "confidence", "line_end", "column_end"):
+        assert key in msg

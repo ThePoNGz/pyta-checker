@@ -10,6 +10,7 @@ import ast
 import contextlib
 import io
 import json
+import logging
 import os
 import sys
 import traceback
@@ -56,11 +57,15 @@ def _syntax_error_message(exc: SyntaxError, path: Path) -> dict[str, Any]:
         "msg": exc.msg or "invalid syntax",
         "C": "E",
         "category": "error",
+        "confidence": ["UNDEFINED", "Warning without any associated confidence level."],
         "line": exc.lineno or 1,
         "column": max((exc.offset or 1) - 1, 0),
         "end_line": exc.end_lineno,
         "end_column": (exc.end_offset - 1) if exc.end_offset else None,
+        "line_end": exc.end_lineno,
+        "column_end": (exc.end_offset - 1) if exc.end_offset else None,
         "path": str(path),
+        "abspath": str(path),
         "module": path.stem,
         "obj": "",
         "snippet": "",
@@ -123,10 +128,19 @@ def run_check(
     report = io.StringIO()
     log = io.StringIO()
     old_cwd = os.getcwd()
+    parent_str = str(file_path.parent)
+    inserted_path = False
+    # python_ta's logging.basicConfig only binds a handler on the first call in a
+    # process, so a handler attached here directly to the root logger is the only
+    # way to reliably capture its log output on repeated in-process runs.
+    root_logger = logging.getLogger()
+    log_handler = logging.StreamHandler(log)
+    root_logger.addHandler(log_handler)
     try:
         os.chdir(file_path.parent)
-        if str(file_path.parent) not in sys.path:
-            sys.path.insert(0, str(file_path.parent))
+        if parent_str not in sys.path:
+            sys.path.insert(0, parent_str)
+            inserted_path = True
         with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
             import python_ta
 
@@ -137,6 +151,10 @@ def run_check(
     except Exception as exc:  # pyta and pylint raise many types; report all of them
         result.update(ok=False, error=f"{type(exc).__name__}: {exc}", traceback=traceback.format_exc())
     finally:
+        log_handler.flush()
+        root_logger.removeHandler(log_handler)
+        if inserted_path:
+            sys.path.remove(parent_str)
         os.chdir(old_cwd)
     result["log"] = log.getvalue()
     if not result["ok"]:
