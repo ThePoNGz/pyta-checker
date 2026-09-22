@@ -1,0 +1,158 @@
+{
+  "name": "pyta-checker",
+  "displayName": "PythonTA Checker",
+  "description": "One-click PythonTA checks: see exactly what python_ta will flag, with PythonTA bundled in. No pip install needed.",
+  "version": "0.1.0",
+  "publisher": "ThePoNGz",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ThePoNGz/pyta-checker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ThePoNGz/pyta-checker/issues"
+  },
+  "engines": {
+    "vscode": "^1.101.0"
+  },
+  "categories": [
+    "Linters",
+    "Education"
+  ],
+  "keywords": [
+    "python",
+    "pyta",
+    "python_ta",
+    "PythonTA",
+    "linter",
+    "uoft",
+    "csc148",
+    "csc108"
+  ],
+  "activationEvents": [
+    "onLanguage:python"
+  ],
+  "extensionDependencies": [
+    "ms-python.python"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "pythonta.check",
+        "title": "Check Current File",
+        "category": "PythonTA"
+      },
+      {
+        "command": "pythonta.restart",
+        "title": "Restart Server",
+        "category": "PythonTA"
+      },
+      {
+        "command": "pythonta.toggleOnlyPyta",
+        "title": "Toggle Only-PythonTA Problems",
+        "category": "PythonTA"
+      },
+      {
+        "command": "pythonta.showOutput",
+        "title": "Show Output Log",
+        "category": "PythonTA"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "pythonta.check",
+        "key": "ctrl+alt+t",
+        "mac": "cmd+alt+t",
+        "when": "editorLangId == python"
+      }
+    ],
+    "configuration": {
+      "title": "PythonTA Checker",
+      "properties": {
+        "pythonta.runOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check a Python file each time it is saved."
+        },
+        "pythonta.runOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Check a Python file when it is opened."
+        },
+        "pythonta.configPath": {
+          "type": "string",
+          "default": "",
+          "description": "PythonTA config file to use when a file has no embedded check_all(config=...). Relative paths resolve against the workspace folder."
+        },
+        "pythonta.importStrategy": {
+          "type": "string",
+          "enum": [
+            "useBundled",
+            "fromEnvironment"
+          ],
+          "enumDescriptions": [
+            "Use the PythonTA shipped inside the extension.",
+            "Prefer the PythonTA installed in the selected interpreter; fall back to the bundled one."
+          ],
+          "default": "useBundled",
+          "description": "Which PythonTA to run. Changing this restarts the server."
+        },
+        "pythonta.interpreter": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to a Python 3.10+ executable. Overrides the Python extension's selected interpreter. Changing this restarts the server."
+        },
+        "pythonta.hideOtherPythonDiagnostics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Hide Pylance and basedpyright problems so only PythonTA's show. Autocomplete keeps working. Toggle with the 'PythonTA: Toggle Only-PythonTA Problems' command."
+        },
+        "pythonta.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace the communication between VS Code and the PythonTA language server."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "check-types": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.test.json",
+    "lint": "eslint src test",
+    "build": "node esbuild.mjs",
+    "build:prod": "node esbuild.mjs --production",
+    "watch": "node esbuild.mjs --watch",
+    "compile-tests": "tsc -p tsconfig.test.json",
+    "test:unit": "vitest run",
+    "test:integration": "npm run build && npm run compile-tests && vscode-test",
+    "test": "npm run check-types && npm run lint && npm run test:unit",
+    "vscode:prepublish": "npm run build:prod",
+    "package": "vsce package --no-dependencies"
+  },
+  "vsce": {
+    "dependencies": false
+  },
+  "dependencies": {
+    "@vscode/python-extension": "^1.0.6",
+    "vscode-languageclient": "^10.1.1"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.20.4",
+    "@types/vscode": "^1.138.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.0.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.11.0",
+    "mocha": "^12.0.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.1",
+    "vitest": "^5.0.1"
+  }
+}
