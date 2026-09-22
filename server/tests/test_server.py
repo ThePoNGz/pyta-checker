@@ -517,3 +517,30 @@ def test_closing_a_file_clears_its_diagnostics_before_the_kill_waits() -> None:
         release.set()
         thread.join(5)
         ls.stop_checks()
+
+
+async def test_a_broken_course_config_is_visible_on_the_checked_file(client: LanguageClient, tmp_path) -> None:
+    # The config's own messages must not be squiggled as if they were the
+    # student's, but a config that fails to parse must not be silent either.
+    (tmp_path / "cfg.txt").write_text("[MESSAGES CONTROL]\ndisable=not-a-real-message\n", encoding="utf-8")
+    path = tmp_path / "a1.py"
+    path.write_text(
+        '"""Doc."""\nX = 1\n\nif __name__ == "__main__":\n'
+        '    import python_ta\n    python_ta.check_all(config="cfg.txt")\n',
+        encoding="utf-8",
+    )
+    uri = path.as_uri()
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri, language_id="python", version=1, text=path.read_text(encoding="utf-8")
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    about_config = [d for d in client.diagnostics[uri] if d.code == "W0012"]
+    assert len(about_config) == 1, [d.code for d in client.diagnostics[uri]]
+    assert about_config[0].severity == types.DiagnosticSeverity.Information
+    assert about_config[0].range.start.line == 0
+    assert "cfg.txt" in about_config[0].message

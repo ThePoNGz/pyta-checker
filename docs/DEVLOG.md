@@ -439,7 +439,7 @@ Nineteen findings survived verification; fourteen were fixed, each with a test w
 
 **Declined or deferred, with reasons.**
 
-- A message about a broken course config now goes only to the Output log. It is the right place for the squiggle not to be, but a student whose course config fails to parse sees nothing on screen. A file-level information diagnostic for that case is a reasonable follow-up.
+- ~~A message about a broken course config went only to the Output log.~~ Fixed in the follow-up: the runner returns those messages separately and the server publishes each as an Information diagnostic on line 1 that names the config file and its line, so a config the course's run would complain about is visible without being mistaken for the student's own problem.
 - Student `pylint_args` are still not forwarded. PythonTA reads the first `--output-format` it finds, so a student list containing one would take the JSON reporter away from the runner. Documented in the runner.
 - The first-run prompt, if left open while the toggle is used and then answered "No", writes `false` over the newer action. Judged as the user's most recent explicit answer; recorded as a choice.
 - PythonTA 2.13.1 itself crashes on `check_all(config={...}, load_default_config=False)` with no `.pylintrc` beside the file; the student's own run crashes identically, so forwarding the flag reproduces the grader. Worth knowing before it is reported as a regression.

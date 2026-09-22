@@ -1,6 +1,7 @@
 """Convert PythonTA JSON-reporter messages into LSP diagnostics."""
 from __future__ import annotations
 
+import os
 from typing import Any, Sequence
 
 from lsprotocol import types
@@ -128,6 +129,22 @@ def to_diagnostic(msg: dict[str, Any], lines: Sequence[str] | None) -> types.Dia
         ),
         message=message,
         severity=severity,
+        code=msg_id,
+        code_description=types.CodeDescription(href=docs_url(msg_id, symbol)),
+        source=SOURCE,
+    )
+
+
+def config_diagnostic(msg: dict[str, Any]) -> types.Diagnostic:
+    """A message PythonTA reported against the config file rather than the checked one."""
+    msg_id = str(msg.get("msg_id", ""))
+    symbol = str(msg.get("symbol", ""))
+    name = os.path.basename(str(msg.get("filename", ""))) or "config"
+    where = f"{name}, line {msg['line']}" if msg.get("line") else name
+    return types.Diagnostic(
+        range=types.Range(start=types.Position(0, 0), end=types.Position(0, _UNKNOWN_END_COLUMN)),
+        message=f"PythonTA config {where}: {msg_id} ({symbol}) {msg.get('msg', '')}".rstrip(),
+        severity=types.DiagnosticSeverity.Information,
         code=msg_id,
         code_description=types.CodeDescription(href=docs_url(msg_id, symbol)),
         source=SOURCE,
