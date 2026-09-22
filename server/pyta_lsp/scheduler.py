@@ -147,13 +147,34 @@ class CheckScheduler:
         self._procs: dict[str, subprocess.Popen] = {}
         self._stopped = False
 
-    def run(self, key: str, argv: list[str], cwd: str) -> dict[str, Any] | None:
+    def reserve(self, key: str) -> int:
+        """Claim the next generation for key and stop whatever is running for it.
+
+        A caller that can fail before it reaches run() -- staging a copy, writing
+        it -- has to hold a generation from the start, or it cannot tell whether
+        the failure it is about to publish is still the newest word on the file.
+        """
         with self._lock:
             generation = self._generation.get(key, 0) + 1
             self._generation[key] = generation
             previous = self._procs.pop(key, None)
         if previous is not None:
             _kill(previous)
+        return generation
+
+    def fail(self, key: str, generation: int) -> bool:
+        """Complete `generation` without a result, if it is still the newest."""
+        with self._lock:
+            if self._generation.get(key) != generation:
+                return False
+            self._completed[key] = generation
+            return True
+
+    def run(
+        self, key: str, argv: list[str], cwd: str, generation: int | None = None
+    ) -> dict[str, Any] | None:
+        if generation is None:
+            generation = self.reserve(key)
 
         with self._slots:
             with self._lock:

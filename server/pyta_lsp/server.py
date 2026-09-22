@@ -197,8 +197,11 @@ class PytaLanguageServer(LanguageServer):
         if doc.language_id not in (None, "python"):
             return
         self.notify_status(uri, "checking")
+        # Claimed before anything that can fail, so a failure knows whether it is
+        # still this document's newest word.
+        generation = self.scheduler.reserve(uri)
         try:
-            self._check(uri, path, doc)
+            self._check(uri, path, doc, generation)
         except Exception as exc:
             # Staging and the spawn can both fail. Returning from one of them left
             # no diagnostics and no terminal status, so the status bar spun for the
@@ -206,12 +209,23 @@ class PytaLanguageServer(LanguageServer):
             log.exception("PythonTA check failed for %s", uri)
             reason = str(exc) or type(exc).__name__
             self.log_to_client(f"PythonTA could not check {path}: {reason}", types.MessageType.Error)
-            self.text_document_publish_diagnostics(
-                types.PublishDiagnosticsParams(uri=uri, diagnostics=[failure_diagnostic(reason)])
-            )
-            self.notify_status(uri, "done", 1)
+            self.fail(uri, generation, reason)
 
-    def _check(self, uri: str, path: str, doc: Any) -> None:
+    def fail(self, uri: str, generation: int, reason: str) -> None:
+        """Report a check that produced nothing, unless a newer one took the file.
+
+        Publishing unguarded let an early failure -- mkdtemp, the staged write --
+        wipe the diagnostics of a check already running on the same document and
+        flip its status bar to done while it was still going.
+        """
+        if not self.scheduler.fail(uri, generation):
+            return
+        self.text_document_publish_diagnostics(
+            types.PublishDiagnosticsParams(uri=uri, diagnostics=[failure_diagnostic(reason)])
+        )
+        self.notify_status(uri, "done", 1)
+
+    def _check(self, uri: str, path: str, doc: Any, generation: int) -> None:
         source_dir = os.path.dirname(path)
         try:
             # One read: doc.source can hit the disk, and a didChange between two
@@ -231,11 +245,7 @@ class PytaLanguageServer(LanguageServer):
             # and the file on disk is not what the student is looking at.
             reason = "unsaved changes in a package module cannot be checked; save the file first"
             self.log_to_client(f"{path}: {reason}", types.MessageType.Warning)
-            diagnostics = [failure_diagnostic(reason)]
-            self.text_document_publish_diagnostics(
-                types.PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics)
-            )
-            self.notify_status(uri, "done", len(diagnostics))
+            self.fail(uri, generation, reason)
             return
         staging = tempfile.mkdtemp(prefix="pyta-lsp-") if stage else None
         try:
@@ -265,7 +275,7 @@ class PytaLanguageServer(LanguageServer):
             # On 3.10 PYTHONSAFEPATH does nothing, so sys.path[0] is whatever the
             # runner is spawned in. The staging directory holds only the copy; for
             # a package module that has to stay put it is the package directory.
-            result = self.scheduler.run(uri, argv, os.path.dirname(target))
+            result = self.scheduler.run(uri, argv, os.path.dirname(target), generation)
         finally:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)

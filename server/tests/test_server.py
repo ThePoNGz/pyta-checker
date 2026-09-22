@@ -563,7 +563,7 @@ def _bare_server(root):
 
 def _captured_spawn(ls) -> list:
     calls: list = []
-    ls.scheduler.run = lambda key, argv, cwd: calls.append((argv, cwd)) or None  # type: ignore[method-assign]
+    ls.scheduler.run = lambda key, argv, cwd, generation=None: calls.append((argv, cwd)) or None  # type: ignore[method-assign]
     return calls
 
 
@@ -824,3 +824,32 @@ async def test_a_config_the_extension_could_not_read_is_visible_in_the_editor(
     assert about[0].severity == types.DiagnosticSeverity.Information
     assert about[0].range.start.line == 0
     assert "not a literal" in about[0].message
+
+
+def test_a_failure_from_a_superseded_check_does_not_overwrite_newer_results(tmp_path) -> None:
+    # The failure guard published without asking whose turn it was, so a check
+    # that died in mkdtemp or the staged write replaced the diagnostics of a
+    # newer check already running on the same file, and flipped its status bar
+    # back to done while it was still going.
+    path = tmp_path / "a1.py"
+    path.write_bytes(b'"""Doc."""\nX = 1\n')
+    uri = path.as_uri()
+    ls = _bare_server(tmp_path)
+    statuses: list = []
+    published: list = []
+    ls.notify_status = lambda uri, state, count=None: statuses.append(state)  # type: ignore[method-assign]
+    ls.text_document_publish_diagnostics = lambda params: published.append(params.diagnostics)  # type: ignore[method-assign]
+    ls.log_to_client = lambda *args, **kwargs: None  # type: ignore[method-assign]
+
+    def superseded_then_boom(*args, **kwargs):
+        ls.scheduler.reserve(uri)  # a newer check claims the document
+        raise OSError("no space left on device")
+
+    ls.scheduler.run = superseded_then_boom  # type: ignore[method-assign]
+    try:
+        ls.check(uri)
+    finally:
+        ls.stop_checks()
+
+    assert published == [], "a superseded failure overwrote a newer check's diagnostics"
+    assert statuses == ["checking"], statuses

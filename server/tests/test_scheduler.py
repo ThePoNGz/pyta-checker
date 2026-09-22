@@ -449,3 +449,41 @@ def test_a_spawned_process_is_always_in_the_cancel_all_snapshot(monkeypatch, tmp
     assert killed == [("canceller", proc.pid)], (
         f"the process was not in the snapshot cancel_all took: {killed}"
     )
+
+
+def test_reserve_claims_the_generation_the_run_then_uses(tmp_path: Path) -> None:
+    # The server has to publish a failure for a check that never reached run(),
+    # and it can only tell whether that failure is still current if it holds the
+    # generation from before the staging it failed in.
+    scheduler = CheckScheduler(timeout=30)
+    generation = scheduler.reserve("doc")
+
+    result = scheduler.run("doc", _echo_argv("one"), str(tmp_path), generation)
+
+    assert result is not None
+    assert result[GENERATION_KEY] == generation, "run() bumped a generation it was given"
+
+
+def test_reserve_kills_the_process_the_previous_run_left(tmp_path: Path) -> None:
+    scheduler = CheckScheduler(timeout=30)
+    results: dict[str, object] = {}
+
+    thread = threading.Thread(
+        target=lambda: results.update(r=scheduler.run("doc", _echo_argv("slow", delay=10), str(tmp_path)))
+    )
+    thread.start()
+    time.sleep(0.5)
+    scheduler.reserve("doc")
+    thread.join(15)
+
+    assert not thread.is_alive()
+    assert results["r"] is None
+
+
+def test_fail_completes_only_the_newest_generation() -> None:
+    scheduler = CheckScheduler(timeout=30)
+    first = scheduler.reserve("doc")
+    second = scheduler.reserve("doc")
+
+    assert scheduler.fail("doc", first) is False, "a superseded check reported its own failure"
+    assert scheduler.fail("doc", second) is True
