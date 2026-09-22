@@ -1,4 +1,6 @@
+import json
 import sys
+import time
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -297,6 +299,84 @@ async def test_unsaved_changes_in_a_package_module_are_reported_not_guessed(
     await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
 
     assert FAILURE_CODE in {d.code for d in client.diagnostics[uri]}
+
+
+def _frame(payload: dict) -> bytes:
+    body = json.dumps(payload).encode("utf-8")
+    return b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body
+
+
+def test_the_server_exits_while_checks_are_in_flight() -> None:
+    # The check pool's threads are not daemons, so the interpreter joins them on the
+    # way out. A thread parked on a 60-second subprocess wait therefore holds the
+    # whole process open, and closing a window mid-check orphans it with its mypy.
+    import os
+    import subprocess
+
+    target = FIXTURES / "course_style.py"
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "pyta_lsp"],
+        stdin=subprocess.PIPE,
+        # The runner subprocesses inherit these, so a pipe would keep the parent's
+        # communicate() blocked long after the server itself is gone.
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env=env,
+    )
+    try:
+        proc.stdin.write(
+            _frame(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "capabilities": {},
+                        "processId": None,
+                        "rootUri": FIXTURES.as_uri(),
+                        "initializationOptions": {"runOnOpen": True, "runOnSave": True, "configPath": ""},
+                    },
+                }
+            )
+        )
+        proc.stdin.flush()
+        time.sleep(1.5)
+        text = target.read_text(encoding="utf-8")
+        for index in range(4):
+            proc.stdin.write(
+                _frame(
+                    {
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/didOpen",
+                        "params": {
+                            "textDocument": {
+                                "uri": f"{target.as_uri()}?{index}",
+                                "languageId": "python",
+                                "version": 1,
+                                "text": text,
+                            }
+                        },
+                    }
+                )
+            )
+        proc.stdin.flush()
+        time.sleep(1.0)
+
+        proc.stdin.write(_frame({"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": None}))
+        proc.stdin.write(_frame({"jsonrpc": "2.0", "method": "exit", "params": None}))
+        proc.stdin.flush()
+
+        started = time.monotonic()
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            raise AssertionError("the server did not exit within 30s with checks in flight")
+        assert time.monotonic() - started < 25
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.stdin.close()
 
 
 def test_the_check_command_does_not_occupy_a_protocol_worker() -> None:
