@@ -61,6 +61,15 @@ def select_workspace_root(folders: list[str], path: str) -> str | None:
     return best if best is not None else folders[0]
 
 
+def is_package_module(path: str) -> bool:
+    """Whether the file is part of a package, and so cannot be checked from a copy.
+
+    A copy in a temp directory is not inside the package, so relative imports
+    resolve to nothing and PythonTA reports an import error that is not real.
+    """
+    return os.path.isfile(os.path.join(os.path.dirname(path), "__init__.py"))
+
+
 class PytaLanguageServer(LanguageServer):
     def __init__(self) -> None:
         super().__init__(name="pyta-lsp", version=__version__, max_workers=12)
@@ -104,7 +113,10 @@ class PytaLanguageServer(LanguageServer):
             self.log_to_client(
                 f"Could not read {path} for positions: {exc}", types.MessageType.Warning
             )
-        staging = tempfile.mkdtemp(prefix="pyta-lsp-") if source is not None else None
+        # Staging is what lets a dirty buffer or a non-UTF-8 file be checked at all,
+        # but a package module has to stay where it is.
+        stage = source is not None and not is_package_module(path)
+        staging = tempfile.mkdtemp(prefix="pyta-lsp-") if stage else None
         try:
             target = path
             if staging is not None and source is not None:

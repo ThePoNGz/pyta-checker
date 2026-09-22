@@ -120,6 +120,16 @@ describe('applyOnlyPyta', () => {
     expect(state.values['python.analysis.ignore']).toEqual(['c']);
   });
 
+  it('says so when a workspace setting outranks the global write', async () => {
+    // Writing globally reports success, but a workspace value wins, so the other
+    // server's problems stay on screen and the toggle looks broken.
+    state.scoped['basedpyright.analysis.ignore'] = ['src/generated'];
+
+    await applyOnlyPyta(true, fakeContext(), log);
+
+    expect(state.warned.join(' ')).toContain('basedpyright.analysis.ignore');
+  });
+
   it('drops the snapshot once every restore write lands', async () => {
     state.values['basedpyright.analysis.ignore'] = ['src/generated'];
     const context = fakeContext();

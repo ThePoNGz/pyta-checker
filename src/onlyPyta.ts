@@ -89,7 +89,26 @@ async function applyOnlyPytaNow(
   } catch (error) {
     log.warn(`Could not update the saved ignore snapshot: ${String(error)}`);
   }
+  if (enabled) {
+    reportScopedOverrides(log);
+  }
   await restartOtherServers(log);
+}
+
+/** Global writes lose to a workspace value, so the toggle would silently do nothing. */
+function reportScopedOverrides(log: vscode.LogOutputChannel): void {
+  const blocked = TARGETS.filter((target) => {
+    const inspected = vscode.workspace.getConfiguration(target.section).inspect<unknown>(target.key);
+    return inspected?.workspaceValue !== undefined || inspected?.workspaceFolderValue !== undefined;
+  }).map((target) => `${target.section}.${target.key}`);
+  if (blocked.length === 0) {
+    return;
+  }
+  const names = blocked.join(' and ');
+  log.warn(`Only-PythonTA cannot hide ${names}: a workspace setting outranks the user setting.`);
+  void vscode.window.showWarningMessage(
+    `PythonTA: ${names} is set for this workspace, so those problems stay visible. Remove it from the workspace settings to hide them.`,
+  );
 }
 
 function readCurrent(): Snapshot {
