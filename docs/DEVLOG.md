@@ -410,3 +410,40 @@ What survived was smaller and real: on shutdown the server left its check subpro
 
 Neither reviewer would have caught the bad probe: a wrong test and a wrong harness both read as correct. Only running it two ways and comparing numbers exposed it. The lesson is narrow and worth keeping — a test that has never been seen to fail has not been shown to test anything.
 
+## 14. Final pre-release review (2026-09-22)
+
+One more pass over the whole tree before the first Marketplace release, this time with three reviewers in parallel, each given one slice (server, extension client, packaging and release) plus the invariants from `greptile.json` and the accepted limits above so they would not re-raise them. The suites were green going in: 93 Python tests, 37 unit tests.
+
+Nineteen findings survived verification; fourteen were fixed, each with a test watched failing first. The two that mattered most were both in the server, and both produced diagnostics the course's own run would not.
+
+| Finding | What it means | Status |
+| --- | --- | --- |
+| Messages about the config file were pinned on the student's file | A `disable=` naming an option the bundled pylint 4 does not know produced `W0012` for `cfg.txt`, which the server squiggled on line 1 of `a1.py`. | **fixed** |
+| Four more character-based column codes | `C0303`, `W0511`, `W1401`, `W1402` report character offsets, not bytes; on a line with non-ASCII text the squiggle started one character early. `C0303` is the ordinary trailing-whitespace path. | **fixed** |
+| mypy columns are 1-based | `E9951`-`E9956` forward mypy's start column unchanged, so every type squiggle began one character to the right. The end column is 1-based inclusive, which equals the 0-based exclusive value everything else uses, so only the start moves. | **fixed** |
+| `did_close` and `shutdown` ran on the event loop | Neither was threaded, and both can wait on `taskkill`, so closing a tab mid-check stalled every message. | **fixed**, see below |
+| One mypy cache directory for every user | A fixed path under `/tmp` is owned by whoever created it; mypy failed for everyone else and PythonTA ignores mypy's exit code, so type messages silently vanished. Now per-user. | **fixed** |
+| `load_default_config` dropped | Only `config=` was read from the student's call; `load_default_config=False` was checked against the merged defaults. Now forwarded. | **fixed** |
+| Every window open restarted Pylance | With Only-PythonTA on, activation rewrote both sentinels, restarted both servers and repeated the workspace-override toast. Writes are now skipped for a target already holding the sentinel, restarts happen only when a write landed, the toast at most once per session and never from activation. | **fixed** |
+| The toggle reported success before doing anything | It wrote the setting and toasted; the real writes ran later through the configuration listener and failed only into the log. The toggle now awaits the apply and reports the outcome, including a workspace override in either direction. | **fixed** |
+| "No" on the first-run prompt did nothing | The setting syncs across machines but the prompted flag does not; on a second machine the prompt reappeared with the feature already on. | **fixed** |
+| `stop()` on the 2 s default | Clean shutdown with checks in flight measures ~9.4 s (section 13); every mid-check restart timed out and hard-killed. Now 15 s. | **fixed** |
+| Shell environment passed to the server | `PYTHONHOME`, `VIRTUAL_ENV`, `CONDA_PREFIX`, `PYTHONSTARTUP` from whatever shell launched VS Code outranked the selected interpreter. Dropped. | **fixed** |
+| `greptile.json` in the VSIX | Internal review rules shipped to every user. | **fixed** |
+| Release job ran no tests | A tag push never triggered `ci.yml`; both suites now run in the release job before packaging. | **fixed** |
+| No icon, changelog "unreleased", missing `homepage`/`qna` | Marketplace listing hygiene. A placeholder icon is in `media/`. | **fixed** |
+
+**Shutdown could not be threaded, and the reason is worth keeping.** `@server.thread()` on `shutdown` breaks every pytest-lsp teardown with `JsonRpcRequestCancelled`. pygls implements `lsp_shutdown` as a generator that resumes in the worker's done-callback, where the request-id context variable is unset, so its own "cancel every other pending request" loop cancels the request it is answering. The kill now goes to a non-daemon thread of its own; the interpreter joins it on the way out, and `__main__` still calls `stop_checks` synchronously once `start_io` returns, so the crash path from section 13 is unchanged.
+
+**One invariant bent on purpose.** `did_close` is now on the pygls pool, which is the pool the stdin reader shares and which the rule in `greptile.json` says must not wait on a subprocess. It is bounded: a process is registered for a URI only while it holds one of `max_parallel` slots, so at most two of twelve workers can be parked in a kill, and every other close returns at once. The alternative, the server's own executor, is shut down by `stop_checks`, and a close arriving after that would raise. The rule now records the exception. A second, diff-introduced ordering issue was fixed in the same place: `clear` published the empty list *after* the kill wait, so a file closed and reopened mid-check could have its fresh results wiped; it now publishes first.
+
+**Declined or deferred, with reasons.**
+
+- A message about a broken course config now goes only to the Output log. It is the right place for the squiggle not to be, but a student whose course config fails to parse sees nothing on screen. A file-level information diagnostic for that case is a reasonable follow-up.
+- Student `pylint_args` are still not forwarded. PythonTA reads the first `--output-format` it finds, so a student list containing one would take the JSON reporter away from the runner. Documented in the runner.
+- The first-run prompt, if left open while the toggle is used and then answered "No", writes `false` over the newer action. Judged as the user's most recent explicit answer; recorded as a choice.
+- PythonTA 2.13.1 itself crashes on `check_all(config={...}, load_default_config=False)` with no `.pylintrc` beside the file; the student's own run crashes identically, so forwarding the flag reproduces the grader. Worth knowing before it is reported as a regression.
+- The packaging review confirmed the earlier licence note: python-ta's wheel metadata says MIT, its repository LICENSE is GPL-3.0, and the wheel ships no licence text. `THIRD_PARTY_NOTICES.md` discloses this as it stands; clarifying it is an upstream question.
+- A CI step that installs the built VSIX and smoke-tests it, SHA-pinned actions, an integration matrix against the minimum VS Code version, and a test tying `pyta_lsp.__version__` to `package.json` are all sensible and all deferred.
+
+Where it ended: 108 Python tests, 54 unit tests, 4 integration tests, type-check and lint clean, a fresh VSIX built and unpacked to confirm the server in the bundle carried the new code and `greptile.json` did not. A second reviewer over the finished diff walked the seven Only-PythonTA sequences it was given and found no path that loses a user value.
