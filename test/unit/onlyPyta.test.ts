@@ -8,8 +8,7 @@ type Log = Parameters<typeof applyOnlyPyta>[2];
 const UNREGISTERED =
   'Unable to write to User Settings because basedpyright.analysis.ignore is not a registered configuration.';
 
-function fakeContext(): Context {
-  const store = new Map<string, unknown>();
+function fakeContext(store = new Map<string, unknown>()): Context {
   return {
     globalState: {
       get: (key: string) => store.get(key),
@@ -20,6 +19,16 @@ function fakeContext(): Context {
           store.set(key, value);
         }
       },
+    },
+  } as unknown as Context;
+}
+
+/** A second window on the same globalState that read it before the first window wrote. */
+function staleContext(shared: Context): Context {
+  return {
+    globalState: {
+      get: () => undefined,
+      update: (key: string, value: unknown) => shared.globalState.update(key, value),
     },
   } as unknown as Context;
 }
@@ -118,6 +127,59 @@ describe('applyOnlyPyta', () => {
     await applyOnlyPyta(false, context, log);
 
     expect(state.values['python.analysis.ignore']).toEqual(['c']);
+  });
+
+  it('records nothing in a cycle that had nothing to write', async () => {
+    // Another window, or another machine, already wrote the sentinel. This one
+    // overwrote nothing, so it owes nothing and has no business recording a debt.
+    state.values['python.analysis.ignore'] = ['mine'];
+    await applyOnlyPyta(true, fakeContext(), log);
+    const secondWindow = fakeContext();
+
+    await applyOnlyPyta(true, secondWindow, log);
+
+    expect(secondWindow.globalState.get(SAVED_KEY)).toBeUndefined();
+  });
+
+  it('leaves the user value recoverable when a window that wrote nothing shares the snapshot', async () => {
+    state.values['python.analysis.ignore'] = ['mine'];
+    const store = new Map<string, unknown>();
+    const context = fakeContext(store);
+    await applyOnlyPyta(true, context, log);
+
+    // The second window writes through to the same storage; recording "absent" here
+    // throws away the only copy of the user's value.
+    await applyOnlyPyta(true, staleContext(context), log);
+    await applyOnlyPyta(false, context, log);
+
+    expect(state.values['python.analysis.ignore']).toEqual(['mine']);
+  });
+
+  it('still treats a sentinel it did not write as absent when the cycle writes something', async () => {
+    // Settings Sync or a reinstall can leave one setting already holding the sentinel
+    // with nothing recorded against it; disabling must remove it, not restore it.
+    state.values['basedpyright.analysis.ignore'] = ['**'];
+    const context = fakeContext();
+
+    await applyOnlyPyta(true, context, log);
+    expect(context.globalState.get(SAVED_KEY)).toEqual({ python: null, basedpyright: null });
+    await applyOnlyPyta(false, context, log);
+
+    expect(state.values['basedpyright.analysis.ignore']).toBeUndefined();
+  });
+
+  it('removes a sentinel that no snapshot accounts for at all', async () => {
+    // Both settings already hold it and nothing was recorded anywhere, so the enable
+    // writes nothing. Disabling has to clear it or the other linters stay silent.
+    state.values['python.analysis.ignore'] = ['**'];
+    state.values['basedpyright.analysis.ignore'] = ['**'];
+    const context = fakeContext();
+
+    await applyOnlyPyta(true, context, log);
+    await applyOnlyPyta(false, context, log);
+
+    expect(state.values['python.analysis.ignore']).toBeUndefined();
+    expect(state.values['basedpyright.analysis.ignore']).toBeUndefined();
   });
 
   it('says so when a workspace setting outranks the global write', async () => {

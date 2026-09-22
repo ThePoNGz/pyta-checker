@@ -25,7 +25,7 @@ If nothing appears, open **View > Output** and pick **PythonTA** from the dropdo
 
 | Command | What it does |
 | --- | --- |
-| PythonTA: Check Current File (`Ctrl+Alt+T`, `Cmd+Alt+T` on macOS) | Save and check the active file now. |
+| PythonTA: Check Current File (`Ctrl+Alt+T` on Windows, `Cmd+Alt+T` on macOS, `Ctrl+Alt+Shift+T` on Linux) | Save and check the active file now. |
 | PythonTA: Toggle Only-PythonTA Problems | Hide or show Pylance/basedpyright problems. |
 | PythonTA: Restart Server | Restart the language server (for example after installing a different Python). |
 | PythonTA: Show Output Log | Open the PythonTA log. |

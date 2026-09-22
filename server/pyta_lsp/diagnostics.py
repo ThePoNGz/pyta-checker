@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any, Sequence
 
 from lsprotocol import types
@@ -10,6 +11,7 @@ from .pyta_codes import PYTA_DOCUMENTED_CODES
 
 SOURCE = "PythonTA"
 FAILURE_CODE = "pyta-error"
+CONFIG_WARNING_CODE = "pyta-config"
 PYTA_DOCS = "https://www.cs.toronto.edu/~david/pyta/checkers/index.html"
 PYLINT_DOCS = "https://pylint.readthedocs.io/en/stable/user_guide/messages"
 _PYLINT_DIRS = {
@@ -33,6 +35,23 @@ _CHARACTER_BASED_CODES = frozenset({"E9989", "E0001", "C0303", "W0511", "W1401",
 # inclusive, which is already the 0-based exclusive offset used everywhere else,
 # so only the start is shifted back.
 _ONE_BASED_START_CODES = frozenset({"E9951", "E9952", "E9953", "E9954", "E9955", "E9956"})
+
+
+_LINE_RE = re.compile(r"[^\r\n]*(?:\r\n|\r|\n)")
+
+
+def split_lines(source: str) -> list[str]:
+    """Split source into lines, keepends, on \\r\\n, \\r and \\n only.
+
+    str.splitlines also breaks on \\x0c, \\x0b, \\x1c-\\x1e, \\x85, \\u2028 and
+    \\u2029. Neither Python's tokenizer nor the editor counts any of those as a
+    line, so one in a comment shifts every later message onto the wrong line.
+    """
+    lines = _LINE_RE.findall(source)
+    consumed = sum(len(line) for line in lines)
+    if consumed < len(source):
+        lines.append(source[consumed:])
+    return lines
 
 
 def docs_url(msg_id: str, symbol: str) -> str:
@@ -147,6 +166,22 @@ def config_diagnostic(msg: dict[str, Any]) -> types.Diagnostic:
         severity=types.DiagnosticSeverity.Information,
         code=msg_id,
         code_description=types.CodeDescription(href=docs_url(msg_id, symbol)),
+        source=SOURCE,
+    )
+
+
+def config_warning_diagnostic(message: str) -> types.Diagnostic:
+    """A warning from reading the student's own check_all call.
+
+    Every warning the runner returns comes from that reading, and each one means
+    the file was checked against something other than the config the call asks
+    for. In the Output log alone that is invisible.
+    """
+    return types.Diagnostic(
+        range=types.Range(start=types.Position(0, 0), end=types.Position(0, _UNKNOWN_END_COLUMN)),
+        message=f"PythonTA config: {message}",
+        severity=types.DiagnosticSeverity.Information,
+        code=CONFIG_WARNING_CODE,
         source=SOURCE,
     )
 

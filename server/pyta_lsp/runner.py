@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .config_extract import ExtractedConfig, extract_config
+from .paths import mypy_cache_dir
 
 JSON_FORMAT = {"output-format": "pyta-json"}
 JSON_PYLINT_ARGS = ["--output-format", "pyta-json"]
@@ -188,6 +189,7 @@ def run_check(
     report = io.StringIO()
     log = io.StringIO()
     old_cwd = os.getcwd()
+    old_cache = os.environ.get("MYPY_CACHE_DIR")
     parent_str = str(base_dir)
     inserted_path = False
     # python_ta's logging.basicConfig only binds a handler on the first call in a
@@ -203,7 +205,17 @@ def run_check(
     if previous_level == logging.NOTSET or previous_level > logging.INFO:
         root_logger.setLevel(logging.INFO)
     try:
-        os.chdir(base_dir)
+        # mypy shortens only paths under its cwd, and python_ta's
+        # ^(?P<file>[^:]+): cannot match a Windows drive letter, so an absolute
+        # path drops every E9951-E9956 message. Any ancestor will do, and the
+        # server deliberately spawns a staged check one directory above the copy
+        # so that nothing of the student's sits in sys.path[0].
+        if not file_path.is_relative_to(Path(old_cwd).resolve()):
+            os.chdir(file_path.parent)
+        # python_ta spawns mypy with this process's cwd and environment, and mypy
+        # writes a .mypy_cache into that cwd unless it is told otherwise. The
+        # server's spawn env pins this; a check run in process has to pin it too.
+        os.environ["MYPY_CACHE_DIR"] = mypy_cache_dir()
         if parent_str not in sys.path:
             sys.path.append(parent_str)
             inserted_path = True
@@ -232,6 +244,10 @@ def run_check(
         if inserted_path:
             sys.path.remove(parent_str)
         os.chdir(old_cwd)
+        if old_cache is None:
+            os.environ.pop("MYPY_CACHE_DIR", None)
+        else:
+            os.environ["MYPY_CACHE_DIR"] = old_cache
     result["log"] = log.getvalue()
     if not result["ok"]:
         result["error"] = _logged_error(result["log"]) or result["error"]

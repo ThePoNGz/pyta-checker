@@ -319,3 +319,102 @@ def test_source_dir_resolves_an_embedded_relative_config(tmp_path: Path) -> None
 
     assert result["config_source"] == "embedded"
     assert result["ok"] is True, result["error"]
+
+
+_SIBLING_MARKER = "with open(__file__ + '.MARKER', 'w') as handle:\n    handle.write('ran')\n"
+
+
+def _spawn_like_the_server(cwd: Path, target: str, *args: str) -> subprocess.CompletedProcess:
+    """Spawn the runner the way the scheduler does, environment included."""
+    from pyta_lsp.scheduler import runner_env
+
+    return subprocess.run(
+        [sys.executable, "-m", "pyta_lsp.runner", target, *args],
+        capture_output=True,
+        text=True,
+        env=runner_env(),
+        cwd=str(cwd),
+    )
+
+
+def test_a_sibling_named_after_a_stdlib_module_is_not_imported_at_startup(tmp_path: Path) -> None:
+    # python -m puts the spawn directory at sys.path[0] before the runner's own
+    # module-level imports run, and strip_cwd_from_path only runs inside main(),
+    # so a student's string.py is imported and executed before it can be removed.
+    (tmp_path / "string.py").write_text(_SIBLING_MARKER, encoding="utf-8")
+    (tmp_path / "a1.py").write_text('"""Doc."""\nX = 1\n', encoding="utf-8")
+
+    proc = _spawn_like_the_server(tmp_path, "a1.py")
+
+    assert not (tmp_path / "string.py.MARKER").exists(), "the student's module was executed"
+    data = json.loads(proc.stdout)
+    assert data["ok"] is True, data["error"]
+
+
+def test_a_sibling_random_module_is_not_imported_by_the_mypy_subprocess(tmp_path: Path) -> None:
+    # python_ta's StaticTypeChecker spawns `python -m mypy` with the runner's cwd,
+    # and mypy's own startup imports tempfile, which imports random.
+    (tmp_path / "random.py").write_text(_SIBLING_MARKER, encoding="utf-8")
+    (tmp_path / "a1.py").write_text('"""Doc."""\nCOUNT: int = 1\n', encoding="utf-8")
+
+    proc = _spawn_like_the_server(tmp_path, "a1.py")
+
+    assert not (tmp_path / "random.py.MARKER").exists(), "the student's module was executed"
+    data = json.loads(proc.stdout)
+    assert data["ok"] is True, data["error"]
+
+
+def test_mypy_messages_survive_a_staged_check(tmp_path: Path) -> None:
+    # python_ta's StaticTypeChecker matches mypy's output with ^(?P<file>[^:]+):,
+    # which a Windows drive letter cannot satisfy. mypy only shortens paths under
+    # its cwd, so checking a staged copy from the source directory dropped every
+    # E9951-E9956 message without a word.
+    work = tmp_path / "work"
+    work.mkdir()
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    target = staged / "a1.py"
+    target.write_text('"""Doc."""\nCOUNT: int = "many"\n', encoding="utf-8")
+
+    result = run_check(target, source_dir=str(work))
+
+    assert result["ok"] is True, result["error"]
+    assert "E9952" in _codes(result), _codes(result)
+
+
+def test_the_runner_stays_in_a_cwd_that_already_holds_the_file(tmp_path: Path, monkeypatch) -> None:
+    # The server spawns a staged check one directory above the copy, so that
+    # nothing of the student's sits in sys.path[0]. mypy only needs a cwd the
+    # file is under, so descending into the copy's own directory would give that
+    # protection away for nothing.
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    target = staged / "a1.py"
+    target.write_text('"""Doc."""\nCOUNT: int = "many"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    visited: list[str] = []
+    real_chdir = os.chdir
+    monkeypatch.setattr(os, "chdir", lambda path: visited.append(str(path)) or real_chdir(path))
+
+    result = run_check(target, source_dir=str(tmp_path))
+
+    assert visited == [os.getcwd()], f"the runner moved to {visited}"
+    assert result["ok"] is True, result["error"]
+    assert "E9952" in _codes(result), _codes(result)
+
+
+def test_an_in_process_check_leaves_no_mypy_cache_in_the_cwd(tmp_path: Path, monkeypatch) -> None:
+    # Only the server's spawn env pinned MYPY_CACHE_DIR, so a check run in this
+    # process -- the tests, or `python -m pyta_lsp.runner` by hand -- dropped a
+    # .mypy_cache wherever it happened to be standing. One of those was packaged
+    # into the VSIX from the repository root.
+    monkeypatch.delenv("MYPY_CACHE_DIR", raising=False)
+    target = tmp_path / "a1.py"
+    target.write_text('"""Doc."""\nCOUNT: int = "many"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    result = run_check(target)
+
+    assert result["ok"] is True, result["error"]
+    assert "E9952" in _codes(result), f"mypy never ran, so nothing is proven: {_codes(result)}"
+    assert not (tmp_path / ".mypy_cache").exists(), sorted(p.name for p in tmp_path.iterdir())

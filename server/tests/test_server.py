@@ -343,7 +343,7 @@ def test_the_server_exits_while_checks_are_in_flight() -> None:
         proc.stdin.flush()
         time.sleep(1.5)
         text = target.read_text(encoding="utf-8")
-        for index in range(4):
+        for index in range(6):
             proc.stdin.write(
                 _frame(
                     {
@@ -372,7 +372,10 @@ def test_the_server_exits_while_checks_are_in_flight() -> None:
             proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             raise AssertionError("the server did not exit within 30s with checks in flight")
-        assert time.monotonic() - started < 25
+        elapsed = time.monotonic() - started
+        # Six documents, two slots: four checks are queued behind the semaphore
+        # when exit arrives, and none of them may spawn a runner of its own.
+        assert elapsed < 5, f"exit took {elapsed:.1f}s and scales with open documents"
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -544,3 +547,518 @@ async def test_a_broken_course_config_is_visible_on_the_checked_file(client: Lan
     assert about_config[0].severity == types.DiagnosticSeverity.Information
     assert about_config[0].range.start.line == 0
     assert "cfg.txt" in about_config[0].message
+
+
+def _bare_server(root):
+    """A server with a workspace but no client, for driving check() directly."""
+    from pygls.workspace import Workspace
+
+    from pyta_lsp import server as srv
+
+    ls = srv.PytaLanguageServer()
+    ls.protocol._workspace = Workspace(root.as_uri())
+    ls.notify_status = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    return ls
+
+
+def _captured_spawn(ls) -> list:
+    """Record the spawn, and what the spawn directory held at that moment."""
+    import os
+
+    calls: list = []
+
+    def capture(key, argv, cwd, generation=None):
+        calls.append((argv, cwd, sorted(os.listdir(cwd))))
+        return None
+
+    ls.scheduler.run = capture  # type: ignore[method-assign]
+    return calls
+
+
+def test_the_runner_is_spawned_where_no_student_file_can_be_imported(tmp_path) -> None:
+    # sys.path[0] for `python -m` is the spawn directory, so on 3.10, where
+    # PYTHONSAFEPATH does not exist, the cwd is what a student's string.py rides in
+    # on. With the copy in the spawn directory itself, a file named random.py was
+    # exactly that; it goes one level down, and the spawn directory holds nothing
+    # else.
+    import os
+
+    path = tmp_path / "a1.py"
+    path.write_text('"""Doc."""\nX = 1\n', encoding="utf-8")
+    ls = _bare_server(tmp_path)
+    calls = _captured_spawn(ls)
+    try:
+        ls.check(path.as_uri())
+    finally:
+        ls.stop_checks()
+
+    argv, cwd, entries = calls[0]
+    target = argv[3]
+    assert os.path.dirname(target) != str(tmp_path), "the file was not staged"
+    assert entries == ["staged"], f"the spawn directory holds {entries}"
+    assert os.path.normcase(os.path.dirname(target)) == os.path.normcase(
+        os.path.join(cwd, "staged")
+    ), f"spawned in {cwd}, which is not the parent of {target}"
+
+
+def test_a_package_module_is_spawned_in_its_own_package_directory(tmp_path) -> None:
+    import os
+
+    package = tmp_path / "mypkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    module = package / "mod.py"
+    module.write_bytes(b'"""Doc."""\nX = 1\n')
+    ls = _bare_server(tmp_path)
+    calls = _captured_spawn(ls)
+    try:
+        ls.check(module.as_uri())
+    finally:
+        ls.stop_checks()
+
+    argv, cwd, _entries = calls[0]
+    assert os.path.normcase(argv[3]) == os.path.normcase(str(module))
+    assert os.path.normcase(cwd) == os.path.normcase(os.path.dirname(str(module)))
+
+
+def test_the_runner_env_keeps_the_spawn_directory_off_sys_path() -> None:
+    from pyta_lsp.scheduler import runner_env
+
+    assert runner_env()["PYTHONSAFEPATH"] == "1"
+
+
+async def test_a_staged_check_sees_the_course_config_beside_the_file(
+    client: LanguageClient, tmp_path
+) -> None:
+    # PythonTA's reset_linter loads config/.pylintrc from beside the file it is
+    # given. The staged copy sits in a temp directory that has none, so the
+    # extension checked the student against a config their own run never uses.
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / ".pylintrc").write_text(
+        "[FORBIDDEN IMPORT]\nextra-imports = random\n", encoding="utf-8"
+    )
+    source = '"""Doc."""\nimport random\n\nX = random.random()\n'
+    path = tmp_path / "a1.py"
+    path.write_text(source, encoding="utf-8")
+    uri = path.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri, language_id="python", version=1, text=source
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in client.diagnostics[uri]}
+    assert "E9999" not in codes, "the course config beside the file was not applied"
+
+
+def test_the_local_config_lookup_matches_python_ta_s_own(tmp_path) -> None:
+    # The server cannot call python_ta.config.find_local_config without importing
+    # pylint and astroid into a process that lives for the session, so it carries
+    # its own copy of the lookup. This is what keeps the copy honest.
+    import os
+
+    from python_ta.config import find_local_config as pyta_find
+
+    from pyta_lsp.server import find_local_config
+
+    assert find_local_config(str(tmp_path)) is None
+    assert pyta_find(str(tmp_path)) is None
+    (tmp_path / "config").mkdir()
+    for name in ("pyproject.toml", "pylintrc", ".pylintrc"):
+        (tmp_path / "config" / name).write_text("", encoding="utf-8")
+        ours = find_local_config(str(tmp_path))
+        theirs = pyta_find(str(tmp_path))
+        assert ours is not None and theirs is not None
+        assert os.path.normcase(ours) == os.path.normcase(theirs), name
+
+
+_COOKIE_LINE = 'NOM = "caféééééé ' + "x" * 61 + '"'
+
+
+async def test_a_non_utf8_cookie_does_not_survive_into_the_utf8_staged_copy(
+    client: LanguageClient, tmp_path
+) -> None:
+    # The copy is written as UTF-8. A cp1252 cookie riding along makes the
+    # tokenizer decode those bytes as cp1252, so every non-ASCII character counts
+    # twice: a 79-character line becomes 85 and C0301 appears on a line the
+    # student's own run never complains about.
+    body = '"""Doc."""\n' + _COOKIE_LINE + "\nprint(NOM)\n"
+    results = {}
+    for name, cookie in (("cp1252.py", "cp1252"), ("utf8.py", "utf-8")):
+        source = f"# -*- coding: {cookie} -*-\n" + body
+        path = tmp_path / name
+        path.write_text(source, encoding="utf-8")
+        uri = path.as_uri()
+        client.text_document_did_open(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=uri, language_id="python", version=1, text=source
+                )
+            )
+        )
+        await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+        results[name] = sorted(str(d.code) for d in client.diagnostics[uri])
+
+    assert results["cp1252.py"] == results["utf8.py"], results
+
+
+def test_a_coding_cookie_is_pointed_at_utf8_without_moving_any_line() -> None:
+    from pyta_lsp.server import normalise_coding_cookie
+
+    assert normalise_coding_cookie("# -*- coding: cp1252 -*-\nX = 1\n") == (
+        "# -*- coding: utf-8 -*-\nX = 1\n"
+    )
+    assert normalise_coding_cookie("#!/usr/bin/env python\n# coding: latin-1\nX = 1\n") == (
+        "#!/usr/bin/env python\n# coding: utf-8\nX = 1\n"
+    )
+    assert normalise_coding_cookie("# -*- coding: utf-8 -*-\nX = 1\n") == (
+        "# -*- coding: utf-8 -*-\nX = 1\n"
+    )
+    # A cookie is only a cookie in the first two lines, and only before real code.
+    assert normalise_coding_cookie("X = 1\n# coding: cp1252\n") == "X = 1\n# coding: cp1252\n"
+    assert normalise_coding_cookie("# -*- coding: cp1252 -*-\r\nX = 1\r\n").count("\r\n") == 2
+
+
+async def test_a_saved_package_module_with_mixed_line_endings_is_still_checked(
+    client: LanguageClient, tmp_path
+) -> None:
+    # The editor normalises a document to one EOL, so a file whose bytes mix \r\n
+    # and \n never equals the buffer byte for byte even when it is saved. A package
+    # module cannot be staged, so that comparison is what decides between real
+    # diagnostics and "save the file first".
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    package = tmp_path / "mypkg"
+    package.mkdir()
+    (package / "__init__.py").write_bytes(b"")
+    module = package / "mod.py"
+    module.write_bytes(b'"""Doc."""\r\nimport os\n\r\nX = 1\n')
+    uri = module.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri,
+                language_id="python",
+                version=1,
+                text='"""Doc."""\nimport os\n\nX = 1\n',
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in client.diagnostics[uri]}
+    assert FAILURE_CODE not in codes, "a saved file was reported as having unsaved changes"
+    assert "E9999" in codes
+
+
+def test_matches_disk_ignores_the_editor_s_line_ending_normalisation(tmp_path) -> None:
+    from pyta_lsp.server import matches_disk
+
+    path = tmp_path / "mod.py"
+    path.write_bytes(b'"""Doc."""\r\nX = 1\n\rY = 2\n')
+
+    assert matches_disk(str(path), '"""Doc."""\nX = 1\n\nY = 2\n')
+    assert not matches_disk(str(path), '"""Doc."""\nX = 2\n\nY = 2\n')
+
+
+def test_a_failure_after_the_checking_status_still_ends_the_check(tmp_path) -> None:
+    # mkdtemp, the staged write and Popen can all fail. Returning from any of them
+    # leaves no diagnostics and no terminal status, so the status bar spins for
+    # the rest of the session and the file never shows a result again.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    path = tmp_path / "a1.py"
+    path.write_bytes(b'"""Doc."""\nX = 1\n')
+    ls = _bare_server(tmp_path)
+    statuses: list = []
+    published: list = []
+    ls.notify_status = lambda uri, state, count=None: statuses.append(state)  # type: ignore[method-assign]
+    ls.text_document_publish_diagnostics = lambda params: published.append(params.diagnostics)  # type: ignore[method-assign]
+    ls.log_to_client = lambda *args, **kwargs: None  # type: ignore[method-assign]
+
+    def boom(*args, **kwargs):
+        raise OSError("no space left on device")
+
+    ls.scheduler.run = boom  # type: ignore[method-assign]
+    try:
+        ls.check(path.as_uri())
+    finally:
+        ls.stop_checks()
+
+    assert statuses == ["checking", "done"], statuses
+    assert [d.code for d in published[0]] == [FAILURE_CODE]
+    assert "no space left on device" in published[0][0].message
+
+
+async def test_a_form_feed_does_not_shift_every_later_column(
+    client: LanguageClient, tmp_path
+) -> None:
+    # doc.lines is str.splitlines, which counts \x0c as a line break. The tokenizer
+    # does not, so every message after one is mapped against the wrong line and its
+    # column collapses to that line's length.
+    source = '"""Doc."""\n# note\x0cmore\nNAME = 1\n\nOTHER = NAME+1\nprint(OTHER)\n'
+    path = tmp_path / "a1.py"
+    path.write_text(source, encoding="utf-8")
+    uri = path.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri, language_id="python", version=1, text=source
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    pep8 = [d for d in client.diagnostics[uri] if d.code == "E9989"]
+    assert pep8, [d.code for d in client.diagnostics[uri]]
+    assert pep8[0].range.start.line == 4
+    assert pep8[0].range.start.character == len("OTHER = NAME")
+
+
+async def test_a_config_the_extension_could_not_read_is_visible_in_the_editor(
+    client: LanguageClient,
+) -> None:
+    # A module-level config variable means the file is checked against stock
+    # defaults. In the Output log alone that is invisible, and the student sees
+    # messages their own run does not produce with nothing to explain it.
+    uri = _open(client, "nonliteral_config.py")
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    about = [d for d in client.diagnostics[uri] if str(d.message).startswith("PythonTA config:")]
+    assert len(about) == 1, [d.message for d in client.diagnostics[uri]]
+    assert about[0].severity == types.DiagnosticSeverity.Information
+    assert about[0].range.start.line == 0
+    assert "not a literal" in about[0].message
+
+
+def test_a_failure_from_a_superseded_check_does_not_overwrite_newer_results(tmp_path) -> None:
+    # The failure guard published without asking whose turn it was, so a check
+    # that died in mkdtemp or the staged write replaced the diagnostics of a
+    # newer check already running on the same file, and flipped its status bar
+    # back to done while it was still going.
+    path = tmp_path / "a1.py"
+    path.write_bytes(b'"""Doc."""\nX = 1\n')
+    uri = path.as_uri()
+    ls = _bare_server(tmp_path)
+    statuses: list = []
+    published: list = []
+    ls.notify_status = lambda uri, state, count=None: statuses.append(state)  # type: ignore[method-assign]
+    ls.text_document_publish_diagnostics = lambda params: published.append(params.diagnostics)  # type: ignore[method-assign]
+    ls.log_to_client = lambda *args, **kwargs: None  # type: ignore[method-assign]
+
+    def superseded_then_boom(*args, **kwargs):
+        ls.scheduler.reserve(uri)  # a newer check claims the document
+        raise OSError("no space left on device")
+
+    ls.scheduler.run = superseded_then_boom  # type: ignore[method-assign]
+    try:
+        ls.check(uri)
+    finally:
+        ls.stop_checks()
+
+    assert published == [], "a superseded failure overwrote a newer check's diagnostics"
+    assert statuses == ["checking"], statuses
+
+
+def test_a_config_copy_that_dies_midway_stages_nothing(tmp_path, monkeypatch) -> None:
+    # copyfile writes into the destination before it fails, so a full disk or a
+    # read that dies partway left a truncated config/.pylintrc in staging, and
+    # find_local_config serves that to python_ta: a half-read config is a worse
+    # answer than no config at all.
+    import os
+    import shutil
+
+    from pyta_lsp import server as srv
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / ".pylintrc").write_text(
+        "[FORBIDDEN IMPORT]\nextra-imports = random\n", encoding="utf-8"
+    )
+    path = tmp_path / "a1.py"
+    path.write_text('"""Doc."""\nX = 1\n', encoding="utf-8")
+
+    def half_a_copy(src, dst, *args, **kwargs):
+        with open(dst, "w", encoding="utf-8") as handle:
+            handle.write("[FORBIDDEN IM")
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(shutil, "copyfile", half_a_copy)
+    ls = _bare_server(tmp_path)
+    messages: list = []
+    ls.log_to_client = lambda message, *args, **kwargs: messages.append(message)  # type: ignore[method-assign]
+    staged: list = []
+
+    def capture(key, argv, cwd, generation=None):
+        config_dir = os.path.join(os.path.dirname(argv[3]), "config")
+        staged.append(sorted(os.listdir(config_dir)) if os.path.isdir(config_dir) else [])
+        return None
+
+    ls.scheduler.run = capture  # type: ignore[method-assign]
+    try:
+        ls.check(path.as_uri())
+    finally:
+        ls.stop_checks()
+
+    assert staged == [[]], f"a truncated config was left for python_ta to read: {staged}"
+    assert any(".pylintrc" in message for message in messages), messages
+
+
+class _LockThatHooksItsRelease:
+    """Runs a hook the first time the scheduler's lock is let go."""
+
+    def __init__(self, lock, hook) -> None:
+        self._lock = lock
+        self._hook = hook
+        self._fired = False
+
+    def __enter__(self):
+        return self._lock.__enter__()
+
+    def __exit__(self, *exc):
+        result = self._lock.__exit__(*exc)
+        if not self._fired:
+            self._fired = True
+            self._hook()
+        return result
+
+    def acquire(self, *args, **kwargs):
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self):
+        self._lock.release()
+
+
+def test_a_failure_is_not_published_onto_a_document_that_was_just_closed(tmp_path) -> None:
+    # fail() decided under the lock and published after it. A did_close in that
+    # gap cleared the document and cancelled its check, and the failure landed
+    # afterwards: a squiggle on a file that is no longer open, with nothing left
+    # to clear it.
+    import threading
+
+    path = tmp_path / "a1.py"
+    uri = path.as_uri()
+    ls = _bare_server(tmp_path)
+    published: list = []
+    ls.text_document_publish_diagnostics = lambda params: published.append(params.diagnostics)  # type: ignore[method-assign]
+    generation = ls.scheduler.reserve(uri)
+
+    def close_the_document() -> None:
+        thread = threading.Thread(target=ls.clear, args=(uri,), name="closer")
+        thread.start()
+        thread.join(1)
+        closers.append(thread)
+
+    closers: list = []
+    ls.scheduler._lock = _LockThatHooksItsRelease(ls.scheduler._lock, close_the_document)
+    try:
+        ls.fail(uri, generation, "no space left on device")
+        for thread in closers:
+            thread.join(5)
+    finally:
+        ls.stop_checks()
+
+    assert published, "nothing was published at all"
+    assert published[-1] == [], f"the failure was published after the close: {published}"
+
+
+async def test_a_course_config_that_cannot_be_staged_does_not_lose_the_check(
+    client: LanguageClient, tmp_path
+) -> None:
+    # os.mkdir and copyfile both fail on things a student's folder really holds:
+    # a config/.pylintrc that is a directory, a read-only file, a full disk. The
+    # OSError reached the failure guard, so a file that used to be checked with
+    # the wrong config was not checked at all.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / ".pylintrc").mkdir()  # a directory copyfile cannot read
+    source = '"""Doc."""\nimport random\n\nX = random.random()\n'
+    path = tmp_path / "a1.py"
+    path.write_text(source, encoding="utf-8")
+    uri = path.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri, language_id="python", version=1, text=source
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in client.diagnostics[uri]}
+    assert FAILURE_CODE not in codes, "the check was abandoned over the config copy"
+    assert "E9999" in codes, f"the file was not checked at all: {codes}"
+    assert any(".pylintrc" in message.message for message in client.log_messages), (
+        [m.message for m in client.log_messages]
+    )
+
+
+def test_a_cookie_is_only_looked_for_in_the_first_two_real_lines() -> None:
+    # Splitting on "\n" makes a CR-only buffer one line, so the cookie pattern
+    # scans the whole file and rewrites the first "coding=" it finds anywhere.
+    # A student's own encoding=enc then became encoding=utf-8 and the check
+    # reported an E0602 their own run never does.
+    from pyta_lsp.server import normalise_coding_cookie
+
+    unchanged = "# note\rX = 1\rencoding=enc\rprint(encoding)\r"
+    assert normalise_coding_cookie(unchanged) == unchanged
+
+    # A real cookie in a CR-only buffer is still rewritten, separators and all.
+    assert normalise_coding_cookie("# -*- coding: cp1252 -*-\rX = 1\r") == (
+        "# -*- coding: utf-8 -*-\rX = 1\r"
+    )
+    assert normalise_coding_cookie("#!/usr/bin/env python\r\n# coding: latin-1\r\nX = 1\r\n") == (
+        "#!/usr/bin/env python\r\n# coding: utf-8\r\nX = 1\r\n"
+    )
+
+
+def test_a_buffer_behind_a_bom_is_left_alone() -> None:
+    # The BOM outranks the cookie, and a non-utf-8 cookie behind one is a
+    # SyntaxError before this ever runs. Rewriting it would only move the line.
+    from pyta_lsp.server import normalise_coding_cookie
+
+    source = "\ufeff# -*- coding: cp1252 -*-\nX = 1\n"
+    assert normalise_coding_cookie(source) == source
+
+
+def test_a_staged_file_named_after_a_stdlib_module_is_not_imported(tmp_path) -> None:
+    # On 3.10 PYTHONSAFEPATH does nothing, so the spawn directory is sys.path[0]
+    # for the runner and for the mypy it starts. A staged copy named random.py
+    # sitting there was imported and executed on every save; the environment here
+    # is the one 3.10 gives us.
+    import os
+    import subprocess
+
+    from pyta_lsp.scheduler import runner_env
+
+    marker = tmp_path / "IMPORTED.txt"
+    source = f'"""Doc."""\nimport pathlib\npathlib.Path(r"{marker}").write_text("ran")\n'
+    path = tmp_path / "random.py"
+    path.write_text(source, encoding="utf-8")
+    ls = _bare_server(tmp_path)
+    outcome: dict = {}
+
+    def spawn_without_safepath(key, argv, cwd, generation=None):
+        env = runner_env()
+        del env["PYTHONSAFEPATH"]  # 3.10 ignores it
+        outcome["proc"] = subprocess.run(
+            argv, capture_output=True, text=True, env=env, cwd=cwd
+        )
+        outcome["listing"] = sorted(os.listdir(cwd))
+        return None
+
+    ls.scheduler.run = spawn_without_safepath  # type: ignore[method-assign]
+    try:
+        ls.check(path.as_uri())
+    finally:
+        ls.stop_checks()
+
+    assert not marker.exists(), f"the staged copy was imported from {outcome['listing']}"
+    assert json.loads(outcome["proc"].stdout)["ok"] is True, outcome["proc"].stdout

@@ -73,6 +73,7 @@
         "command": "pythonta.check",
         "key": "ctrl+alt+t",
         "mac": "cmd+alt+t",
+        "linux": "ctrl+alt+shift+t",
         "when": "editorLangId == python"
       }
     ],

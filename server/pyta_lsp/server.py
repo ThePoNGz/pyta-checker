@@ -1,8 +1,10 @@
 """pygls language server that runs PythonTA through the runner subprocess."""
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -17,7 +19,13 @@ from pygls import uris
 from pygls.lsp.server import LanguageServer
 
 from . import __version__
-from .diagnostics import config_diagnostic, failure_diagnostic, to_diagnostic
+from .diagnostics import (
+    config_diagnostic,
+    config_warning_diagnostic,
+    failure_diagnostic,
+    split_lines,
+    to_diagnostic,
+)
 from .scheduler import GENERATION_KEY, CheckScheduler
 
 log = logging.getLogger("pyta_lsp")
@@ -72,13 +80,72 @@ def is_package_module(path: str) -> bool:
     return os.path.isfile(os.path.join(os.path.dirname(path), "__init__.py"))
 
 
+_COOKIE_RE = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*(?P<name>[-_.a-zA-Z0-9]+)")
+
+
+def normalise_coding_cookie(source: str) -> str:
+    """Point a PEP 263 cookie at utf-8, because the staged copy is written as utf-8.
+
+    Left alone, the tokenizer decodes those utf-8 bytes as the declared encoding,
+    so every non-ASCII character counts twice and columns, line lengths and the
+    messages that follow from them are all wrong. Only the encoding name changes,
+    so no line moves and no separator changes.
+
+    The split has to be the tokenizer's: on "\\n" alone a CR-only buffer is one
+    line, and the pattern then finds a "coding=" anywhere in the file. A buffer
+    behind a BOM is left as it is; a non-utf-8 cookie there is a SyntaxError
+    before this runs, as it was before.
+    """
+    lines = split_lines(source)
+    for index in range(min(2, len(lines))):
+        line = lines[index]
+        content = line.rstrip("\r\n")
+        ending = line[len(content):]
+        match = _COOKIE_RE.match(content)
+        if match:
+            if match.group("name").lower().replace("_", "-") not in ("utf-8", "utf8"):
+                start, end = match.span("name")
+                lines[index] = content[:start] + "utf-8" + content[end:] + ending
+            return "".join(lines)
+        if content.strip() and not content.lstrip().startswith("#"):
+            break
+    return source
+
+
+# The order python_ta.config.find_local_config tries, and the only names it knows.
+_LOCAL_CONFIG_NAMES = (".pylintrc", "pylintrc", "pyproject.toml")
+
+
+def find_local_config(directory: str) -> str | None:
+    """The config/ file PythonTA would load from beside a file in `directory`.
+
+    A copy of python_ta.config.find_local_config: calling the real one would pull
+    pylint and astroid into a process that lives for the whole session, and the
+    server deliberately keeps that in the runner subprocess.
+    """
+    for name in _LOCAL_CONFIG_NAMES:
+        candidate = os.path.join(directory, "config", name)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _one_eol(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def matches_disk(path: str, source: str) -> bool:
-    """Whether the buffer is what a checker reading the file would see."""
+    """Whether the buffer is what a checker reading the file would see.
+
+    Line endings are normalised on both sides: the editor presents a document
+    with one EOL whatever the file holds, so a saved file with mixed endings
+    would otherwise look like an unsaved buffer.
+    """
     try:
         with open(path, "rb") as handle:
             encoding, _ = tokenize.detect_encoding(handle.readline)
         with open(path, "r", encoding=encoding, newline="") as handle:
-            return handle.read() == source
+            return _one_eol(handle.read()) == _one_eol(source)
     except (OSError, UnicodeDecodeError, SyntaxError, LookupError):
         return False
 
@@ -139,10 +206,45 @@ class PytaLanguageServer(LanguageServer):
         if doc.language_id not in (None, "python"):
             return
         self.notify_status(uri, "checking")
+        # Claimed before anything that can fail, so a failure knows whether it is
+        # still this document's newest word.
+        generation = self.scheduler.reserve(uri)
+        try:
+            self._check(uri, path, doc, generation)
+        except Exception as exc:
+            # Staging and the spawn can both fail. Returning from one of them left
+            # no diagnostics and no terminal status, so the status bar spun for the
+            # rest of the session.
+            log.exception("PythonTA check failed for %s", uri)
+            reason = str(exc) or type(exc).__name__
+            self.log_to_client(f"PythonTA could not check {path}: {reason}", types.MessageType.Error)
+            self.fail(uri, generation, reason)
+
+    def fail(self, uri: str, generation: int, reason: str) -> None:
+        """Report a check that produced nothing, unless a newer one took the file.
+
+        Publishing unguarded let an early failure -- mkdtemp, the staged write --
+        wipe the diagnostics of a check already running on the same document and
+        flip its status bar to done while it was still going. The publish goes
+        inside the guard's own lock, or a did_close between the decision and the
+        publish leaves the failure on a document that is no longer open.
+        """
+
+        def publish() -> None:
+            self.text_document_publish_diagnostics(
+                types.PublishDiagnosticsParams(uri=uri, diagnostics=[failure_diagnostic(reason)])
+            )
+            self.notify_status(uri, "done", 1)
+
+        self.scheduler.fail(uri, generation, publish)
+
+    def _check(self, uri: str, path: str, doc: Any, generation: int) -> None:
         source_dir = os.path.dirname(path)
         try:
+            # One read: doc.source can hit the disk, and a didChange between two
+            # reads would map this run's messages onto a different text.
             source: str | None = doc.source
-            lines: list[str] | None = doc.lines
+            lines: list[str] | None = split_lines(source)
         except (OSError, UnicodeDecodeError) as exc:
             source, lines = None, None
             self.log_to_client(
@@ -156,11 +258,7 @@ class PytaLanguageServer(LanguageServer):
             # and the file on disk is not what the student is looking at.
             reason = "unsaved changes in a package module cannot be checked; save the file first"
             self.log_to_client(f"{path}: {reason}", types.MessageType.Warning)
-            diagnostics = [failure_diagnostic(reason)]
-            self.text_document_publish_diagnostics(
-                types.PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics)
-            )
-            self.notify_status(uri, "done", len(diagnostics))
+            self.fail(uri, generation, reason)
             return
         staging = tempfile.mkdtemp(prefix="pyta-lsp-") if stage else None
         try:
@@ -168,16 +266,50 @@ class PytaLanguageServer(LanguageServer):
             if staging is not None and source is not None:
                 # PythonTA reads the path it is given as UTF-8, and the editor buffer
                 # can differ from disk, so check a UTF-8 copy of what the user sees.
-                target = os.path.join(staging, os.path.basename(path))
+                # The copy goes one level below the spawn directory: that directory
+                # is sys.path[0] on 3.10, and a copy named random.py or string.py
+                # sitting in it is imported before anything can strip it.
+                staged_dir = os.path.join(staging, "staged")
+                os.mkdir(staged_dir)
+                target = os.path.join(staged_dir, os.path.basename(path))
                 with open(target, "w", encoding="utf-8", newline="") as handle:
-                    handle.write(source)
+                    handle.write(normalise_coding_cookie(source))
+                # PythonTA loads config/.pylintrc from beside the file it is given,
+                # so without this the copy is checked against a different config
+                # than the student's own run uses.
+                local_config = find_local_config(source_dir)
+                if local_config:
+                    staged_config = os.path.join(
+                        staged_dir, "config", os.path.basename(local_config)
+                    )
+                    try:
+                        os.mkdir(os.path.join(staged_dir, "config"))
+                        shutil.copyfile(local_config, staged_config)
+                    except OSError as exc:
+                        # copyfile writes before it fails, and find_local_config
+                        # would then hand python_ta a truncated config, which is a
+                        # worse answer than the defaults.
+                        with contextlib.suppress(OSError):
+                            os.remove(staged_config)
+                        # Checking against the wrong config is wrong; not checking
+                        # at all is worse, and that is what raising here meant.
+                        self.log_to_client(
+                            f"Could not copy {local_config} beside the staged file: {exc}; "
+                            "checking without it",
+                            types.MessageType.Warning,
+                        )
             argv = [sys.executable, "-m", "pyta_lsp.runner", target, "--source-dir", source_dir]
             if self.settings.config_path:
                 argv += ["--config", self.settings.config_path]
                 root = select_workspace_root(self.workspace_folders, path)
                 if root:
                     argv += ["--workspace-root", root]
-            result = self.scheduler.run(uri, argv, source_dir)
+            # On 3.10 PYTHONSAFEPATH does nothing, so sys.path[0] is whatever the
+            # runner is spawned in. For a staged check that is the staging root,
+            # which holds one subdirectory and nothing importable; for a package
+            # module, which has to stay put, it is the package directory.
+            spawn_dir = staging if staging is not None else os.path.dirname(target)
+            result = self.scheduler.run(uri, argv, spawn_dir, generation)
         finally:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
@@ -188,8 +320,12 @@ class PytaLanguageServer(LanguageServer):
             diagnostics = [to_diagnostic(m, lines) for m in result.get("messages", [])]
             # The config file's own messages: not the student's to fix, but not silent either.
             diagnostics.extend(config_diagnostic(m) for m in result.get("elsewhere", []))
+            # Every warning the runner returns comes from reading the student's
+            # own check_all call, and each one means this check used a different
+            # config than that call asks for.
             for warning in result.get("warnings", []):
                 self.log_to_client(f"{path}: {warning}", types.MessageType.Warning)
+                diagnostics.append(config_warning_diagnostic(warning))
         else:
             reason = str(result.get("error") or "unknown error")
             diagnostics = [failure_diagnostic(reason)]

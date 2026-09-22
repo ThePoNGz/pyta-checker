@@ -172,3 +172,109 @@ def test_a_non_bool_load_default_config_is_ignored_with_a_warning() -> None:
 
     assert result.load_default_config is None
     assert any("load_default_config" in w for w in result.warnings)
+
+
+def test_a_positional_config_dict_is_read() -> None:
+    # check_all(module_name, config, output, load_default_config, ...). A config
+    # passed by position was ignored without a word, so the student was checked
+    # against stock defaults.
+    source = "import python_ta\npython_ta.check_all('a1.py', {'extra-imports': ['random']})\n"
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.kind == "dict"
+    assert result.value == {"extra-imports": ["random"]}
+    assert result.warnings == []
+
+
+def test_a_positional_config_path_is_read(tmp_path: Path) -> None:
+    source = "import python_ta\npython_ta.check_all('a1.py', 'course.txt')\n"
+    result = extract_config(ast.parse(source), tmp_path)
+
+    assert result.kind == "path"
+    assert result.value == str(tmp_path / "course.txt")
+
+
+def test_a_positional_load_default_config_is_read() -> None:
+    source = (
+        "import python_ta\n"
+        "python_ta.check_all('a1.py', {'max-line-length': 100}, None, False)\n"
+    )
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.kind == "dict"
+    assert result.load_default_config is False
+
+
+def test_a_keyword_config_still_wins_over_the_positional_slot() -> None:
+    source = "import python_ta\npython_ta.check_all('a1.py', config={'a': 1})\n"
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.value == {"a": 1}
+
+
+def test_a_nonliteral_positional_config_warns_like_the_keyword_one() -> None:
+    source = "import python_ta\nCFG = {'a': 1}\npython_ta.check_all('a1.py', CFG)\n"
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.kind == "absent"
+    assert any("not a literal" in w for w in result.warnings)
+
+
+def test_a_starred_argument_list_is_not_guessed_at() -> None:
+    # With *args in the call, nothing can be said about which slot holds what.
+    source = "import python_ta\nARGS = ['a1.py']\npython_ta.check_all(*ARGS, {'a': 1})\n"
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.kind == "absent"
+    assert result.load_default_config is None
+    assert any("*" in w for w in result.warnings), result.warnings
+
+
+def test_a_keyword_config_is_read_even_beside_a_starred_argument_list() -> None:
+    # *args hides the positions, not the keywords. The keyword is right there.
+    source = "import python_ta\nARGS = ['a1.py']\npython_ta.check_all(*ARGS, config={'a': 1})\n"
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.kind == "dict"
+    assert result.value == {"a": 1}
+    assert result.warnings == []
+
+
+def test_a_positional_config_is_still_read_beside_a_starred_keyword_dict() -> None:
+    # **kwargs cannot take a positional slot away: args[1] is the config whatever
+    # the dict carries. Treating it as if it could hid a config that was read
+    # correctly before, and the file was checked against stock defaults.
+    source = (
+        "import python_ta\nEXTRA = {'output': None}\n"
+        "python_ta.check_all('a1.py', {'extra-imports': ['random']}, **EXTRA)\n"
+    )
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.kind == "dict"
+    assert result.value == {"extra-imports": ["random"]}
+    assert any("cannot be read" in w for w in result.warnings), result.warnings
+
+
+def test_a_keyword_config_is_read_beside_a_starred_keyword_dict() -> None:
+    # The warning belongs to the **kwargs, not to the config: it fires whenever
+    # one is there, because it can still carry a load_default_config we cannot see.
+    source = (
+        "import python_ta\nEXTRA = {'load_default_config': False}\n"
+        "python_ta.check_all('a1.py', config={'a': 1}, **EXTRA)\n"
+    )
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.kind == "dict"
+    assert result.value == {"a": 1}
+    assert any("cannot be read" in w for w in result.warnings), result.warnings
+
+
+def test_a_starred_keyword_dict_is_not_guessed_at() -> None:
+    # **CFG can carry config or load_default_config and there is no way to tell,
+    # so this was silently checked against the defaults with nothing said.
+    source = "import python_ta\nCFG = {'config': {'a': 1}}\npython_ta.check_all('a1.py', **CFG)\n"
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.kind == "absent"
+    assert result.load_default_config is None
+    assert any("cannot be read" in w for w in result.warnings), result.warnings

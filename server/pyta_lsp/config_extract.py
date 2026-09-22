@@ -68,8 +68,30 @@ def _check_calls(tree: ast.AST) -> list[tuple[str, ast.Call]]:
     return calls
 
 
-def _keyword(call: ast.Call, name: str) -> ast.keyword | None:
-    return next((kw for kw in call.keywords if kw.arg == name), None)
+# python_ta's own order: check_all/check_errors(module_name, config, output,
+# load_default_config, autoformat, on_verify_fail, pylint_args).
+_POSITIONS = {"config": 1, "load_default_config": 3}
+
+
+def _argument(call: ast.Call, name: str) -> ast.expr | None:
+    """The value given for `name`, by keyword or by position."""
+    keyword = next((kw for kw in call.keywords if kw.arg == name), None)
+    if keyword is not None:
+        return keyword.value
+    if _starred_args(call):
+        return None
+    index = _POSITIONS[name]
+    return call.args[index] if index < len(call.args) else None
+
+
+def _starred_args(call: ast.Call) -> bool:
+    """*args shifts every position, so no positional slot can be read."""
+    return any(isinstance(arg, ast.Starred) for arg in call.args)
+
+
+def _starred_kwargs(call: ast.Call) -> bool:
+    """**kwargs can carry any keyword at all, but it takes no positional slot."""
+    return any(kw.arg is None for kw in call.keywords)
 
 
 def _load_default_config(call: ast.Call, name: str) -> tuple[bool | None, list[str]]:
@@ -78,11 +100,11 @@ def _load_default_config(call: ast.Call, name: str) -> tuple[bool | None, list[s
     A course file that turns the defaults off is otherwise checked against them
     merged in, which is not what the grader runs.
     """
-    kw = _keyword(call, "load_default_config")
-    if kw is None:
+    node = _argument(call, "load_default_config")
+    if node is None:
         return None, []
     try:
-        value = ast.literal_eval(kw.value)
+        value = ast.literal_eval(node)
     except (ValueError, SyntaxError, TypeError):
         value = None
     if isinstance(value, bool):
@@ -99,17 +121,39 @@ def extract_config(tree: ast.AST, base_dir: Path) -> ExtractedConfig:
 
     # The call that supplies the config is the one whose other arguments apply.
     name, call = next(
-        ((n, c) for n, c in calls if _keyword(c, "config") is not None), calls[0]
+        ((n, c) for n, c in calls if _argument(c, "config") is not None),
+        calls[0],
     )
-    load_default, warnings = _load_default_config(call, name)
-    config_kw = _keyword(call, "config")
-    if config_kw is None:
+    warnings: list[str] = []
+    if _starred_kwargs(call):
+        # It takes no positional slot, so whatever is written out is still read;
+        # what it may carry unseen is another config or a load_default_config.
+        warnings.append(
+            f"line {call.lineno}: {name}() is called with **kwargs, "
+            "so the arguments it carries cannot be read"
+        )
+    load_default, literal_warnings = _load_default_config(call, name)
+    warnings += literal_warnings
+    config_node = _argument(call, "config")
+    if config_node is None:
+        if _starred_args(call):
+            return ExtractedConfig(
+                "absent",
+                None,
+                name == "check_errors",
+                warnings
+                + [
+                    f"line {call.lineno}: {name}() is called with *args, "
+                    "so its positional arguments cannot be read; using defaults"
+                ],
+                load_default,
+            )
         errors_only = calls[0][0] == "check_errors"
         return ExtractedConfig("absent", None, errors_only, warnings, load_default)
 
     errors_only = name == "check_errors"
     try:
-        value = ast.literal_eval(config_kw.value)
+        value = ast.literal_eval(config_node)
     except (ValueError, SyntaxError, TypeError):
         return ExtractedConfig(
             "absent",

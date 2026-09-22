@@ -1,15 +1,15 @@
 """Run the runner subprocess per document. A newer request kills and supersedes an older one."""
 from __future__ import annotations
 
-import getpass
 import json
 import os
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 from typing import Any, Callable
+
+from .paths import mypy_cache_dir
 
 Spawn = Callable[[list[str], str], subprocess.Popen]
 
@@ -17,27 +17,19 @@ Spawn = Callable[[list[str], str], subprocess.Popen]
 GENERATION_KEY = "__generation__"
 
 
-def _user_tag() -> str:
-    """A stable per-user component for paths under the shared temp directory."""
-    try:
-        name = getpass.getuser()
-    except (OSError, KeyError, ImportError):
-        uid = getattr(os, "getuid", None)
-        name = str(uid()) if uid is not None else ""
-    cleaned = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
-    return cleaned or "default"
-
-
 def runner_env() -> dict[str, str]:
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
-    # On a shared /tmp the first user to create a fixed cache directory owns it,
-    # and mypy then fails for everyone else. python_ta ignores mypy's return code,
-    # so E9951-E9956 would vanish with no error shown.
-    env["MYPY_CACHE_DIR"] = os.path.join(
-        tempfile.gettempdir(), f"pyta-checker-mypy-cache-{_user_tag()}"
-    )
+    # 3.11+. Keeps the spawn directory off sys.path[0] before the runner's own
+    # imports run, and mypy inherits it, so a student's string.py or random.py
+    # beside the checked file is never imported. Ignored on 3.10, where the cwd
+    # the server chooses is what limits the damage.
+    env["PYTHONSAFEPATH"] = "1"
+    # Pinned regardless of what the editor's environment says, so a stray
+    # MYPY_CACHE_DIR cannot point the cache at a directory the student's
+    # checks would fight over.
+    env["MYPY_CACHE_DIR"] = mypy_cache_dir()
     return env
 
 
@@ -91,6 +83,25 @@ def _kill(proc: subprocess.Popen) -> None:
         pass
 
 
+def _reap_later(proc: subprocess.Popen) -> None:
+    """Hand a process the worker could not reap to a thread that can wait for it.
+
+    Neither reaping nor closing may happen on the worker: a tree kill that did
+    not take leaves a grandchild holding the write end of the pipes, so Popen's
+    reader threads never finish and both communicate() and pipe.close() block
+    until they do. An untimed communicate() on a daemon thread closes the pipes
+    itself once the process finally dies, and costs nothing if it never does.
+    """
+    threading.Thread(target=_reap, args=(proc,), name="pyta-reap", daemon=True).start()
+
+
+def _reap(proc: subprocess.Popen) -> None:
+    try:
+        proc.communicate()
+    except (OSError, ValueError):
+        pass
+
+
 def _failure(error: str, log: str) -> dict[str, Any]:
     return {"ok": False, "error": error, "messages": [], "log": log, "warnings": [], "traceback": None}
 
@@ -121,25 +132,54 @@ class CheckScheduler:
         self._generation: dict[str, int] = {}
         self._completed: dict[str, int] = {}
         self._procs: dict[str, subprocess.Popen] = {}
+        self._stopped = False
 
-    def run(self, key: str, argv: list[str], cwd: str) -> dict[str, Any] | None:
+    def reserve(self, key: str) -> int:
+        """Claim the next generation for key and stop whatever is running for it.
+
+        A caller that can fail before it reaches run() -- staging a copy, writing
+        it -- has to hold a generation from the start, or it cannot tell whether
+        the failure it is about to publish is still the newest word on the file.
+        """
         with self._lock:
             generation = self._generation.get(key, 0) + 1
             self._generation[key] = generation
             previous = self._procs.pop(key, None)
         if previous is not None:
             _kill(previous)
+        return generation
+
+    def fail(self, key: str, generation: int, action: Callable[[], None]) -> bool:
+        """Complete `generation` without a result and run action, if it is still the newest.
+
+        The action runs under the lock, as guard() does: deciding inside it and
+        publishing outside let a did_close land in between, so the failure was
+        published onto a document whose diagnostics had just been cleared.
+        """
+        with self._lock:
+            if self._generation.get(key) != generation:
+                return False
+            self._completed[key] = generation
+            action()
+            return True
+
+    def run(
+        self, key: str, argv: list[str], cwd: str, generation: int | None = None
+    ) -> dict[str, Any] | None:
+        if generation is None:
+            generation = self.reserve(key)
 
         with self._slots:
-            proc = self._spawn(argv, cwd)
             with self._lock:
-                superseded = self._generation[key] != generation
-                if not superseded:
-                    self._procs[key] = proc
-            if superseded:
-                _kill(proc)
-                proc.communicate()
-                return None
+                # A thread can wait here for minutes. Spawning after cancel_all,
+                # or after a newer request took this key, starts a runner nothing
+                # is left to kill. The check, the spawn and the registration are
+                # one critical section, so a cancel_all cannot snapshot _procs
+                # between them and miss the process about to exist.
+                if self._stopped or self._generation.get(key) != generation:
+                    return None
+                proc = self._spawn(argv, cwd)
+                self._procs[key] = proc
 
             timed_out = False
             try:
@@ -150,6 +190,7 @@ class CheckScheduler:
                     out, err = proc.communicate(timeout=5)
                 except subprocess.TimeoutExpired:
                     out, err = b"", b""
+                    _reap_later(proc)
                 timed_out = True
 
         with self._lock:
@@ -178,11 +219,20 @@ class CheckScheduler:
             return True
 
     def cancel_all(self) -> None:
-        """Kill every in-flight check so its worker thread stops waiting."""
+        """Stop every check, the ones still queued for a slot included.
+
+        Bumping only the keys that already hold a process left a queued thread
+        looking current, so it spawned a runner after shutdown and then waited
+        out the timeout on it.
+        """
         with self._lock:
-            keys = list(self._procs)
-        for key in keys:
-            self.cancel(key)
+            self._stopped = True
+            for key in self._generation:
+                self._generation[key] += 1
+            procs = list(self._procs.values())
+            self._procs.clear()
+        for proc in procs:
+            _kill(proc)
 
     def cancel(self, key: str) -> None:
         with self._lock:

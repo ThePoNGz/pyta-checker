@@ -12,6 +12,7 @@ out/**
 docs/**
 node_modules/**
 bundled/libs/**/__pycache__/**
+**/.mypy_cache/**
 .venv/**
 .venv-bare/**
 **/*.map

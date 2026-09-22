@@ -15,3 +15,9 @@
 - Only-PythonTA: opening a window no longer restarts Pylance/basedpyright when nothing changed; the toggle reports whether the settings change actually took effect, in both directions, when a workspace setting outranks it; the first-run prompt honours "No".
 - The server is no longer given the parent shell's `PYTHONHOME`/`VIRTUAL_ENV`/`CONDA_PREFIX`/`PYTHONSTARTUP`.
 - Server shutdown is given time to clean up its check processes on restart.
+- Type-check messages (E9951–E9956) now appear on Windows for unsaved and non-package files; a course `config/.pylintrc` beside the file and a `config` passed by position are honoured; a file with a non-UTF-8 coding cookie, mixed line endings, or a form feed is checked and positioned correctly.
+- A student file named after a standard-library module (`random.py`, `string.py`, ...) beside the checked file is no longer imported by the checker.
+- Closing the window with several files open no longer leaves check processes running; a check that fails before it starts no longer leaves the status bar spinning.
+- Restart during the client's own crash recovery no longer leaves a second server running; an interpreter set in `pythonta.interpreter` that cannot run is reported once instead of silently replaced.
+- Only-PythonTA: a workspace setting equal to the hide-all value no longer reads as blocking; folder settings in multi-root workspaces are seen; a second window no longer overwrites the saved settings snapshot.
+- Linux keybinding is `Ctrl+Alt+Shift+T` (GNOME uses `Ctrl+Alt+T` for the terminal).

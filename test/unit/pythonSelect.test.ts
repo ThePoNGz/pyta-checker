@@ -45,6 +45,40 @@ describe('selectPython', () => {
   });
 });
 
+describe('selectPython reporting why it skipped a candidate', () => {
+  it('reports the reason an interpreter could not be run', async () => {
+    const skipped: string[] = [];
+    const result = await selectPython(
+      [{ path: 'C:/gone/python.exe', origin: 'setting' }, { path: 'python', origin: 'path' }],
+      fakeProbe({ 'C:/gone/python.exe': new Error('spawn C:/gone/python.exe ENOENT'), python: '3.13\n' }),
+      (candidate, reason) => skipped.push(`${candidate.origin} ${candidate.path}: ${reason}`),
+    );
+
+    expect(result).toMatchObject({ path: 'python' });
+    expect(skipped).toEqual(['setting C:/gone/python.exe: spawn C:/gone/python.exe ENOENT']);
+  });
+
+  it('reports the version of an interpreter that is too old', async () => {
+    const skipped: string[] = [];
+    await selectPython(
+      [{ path: 'C:/old/python.exe', origin: 'setting' }, { path: 'python', origin: 'path' }],
+      fakeProbe({ 'C:/old/python.exe': '3.8\n', python: '3.13\n' }),
+      (candidate, reason) => skipped.push(`${candidate.path}: ${reason}`),
+    );
+
+    expect(skipped).toEqual(['C:/old/python.exe: Python 3.8, too old']);
+  });
+
+  it('reports nothing when the first candidate qualifies', async () => {
+    const skipped: string[] = [];
+    await selectPython([{ path: 'python', origin: 'setting' }], fakeProbe({ python: '3.13\n' }), (candidate) =>
+      skipped.push(candidate.path),
+    );
+
+    expect(skipped).toEqual([]);
+  });
+});
+
 describe('pathCandidates', () => {
   it('prefers py launcher last on windows and python3 first elsewhere', () => {
     expect(pathCandidates('win32').map((c) => c.path)).toEqual(['python', 'python3', 'py']);
