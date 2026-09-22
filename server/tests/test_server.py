@@ -1,6 +1,7 @@
 import sys
 from collections.abc import AsyncGenerator
 
+import pytest
 import pytest_lsp
 from lsprotocol import types
 from pytest_lsp import ClientServerConfig, LanguageClient
@@ -18,6 +19,19 @@ async def client(lsp_client: LanguageClient) -> AsyncGenerator[None, None]:
         )
     )
     lsp_client.server_capabilities = result.capabilities  # type: ignore[attr-defined]
+    yield
+    await lsp_client.shutdown_session()
+
+
+@pytest_lsp.fixture(config=ClientServerConfig(server_command=[sys.executable, "-m", "pyta_lsp"]))
+async def quiet_client(lsp_client: LanguageClient) -> AsyncGenerator[None, None]:
+    await lsp_client.initialize_session(
+        types.InitializeParams(
+            capabilities=types.ClientCapabilities(),
+            root_uri=FIXTURES.as_uri(),
+            initialization_options={"runOnOpen": False, "runOnSave": True, "configPath": ""},
+        )
+    )
     yield
     await lsp_client.shutdown_session()
 
@@ -85,3 +99,23 @@ async def test_server_advertises_check_command(client: LanguageClient) -> None:
     provider = client.server_capabilities.execute_command_provider  # type: ignore[attr-defined]
     assert provider is not None
     assert "pyta.check" in provider.commands
+
+
+async def test_run_on_open_false_publishes_nothing(quiet_client: LanguageClient) -> None:
+    import asyncio
+
+    uri = _open(quiet_client, "no_config.py")
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            quiet_client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS), timeout=8
+        )
+    assert uri not in quiet_client.diagnostics or list(quiet_client.diagnostics[uri]) == []
+
+
+async def test_precheck_failure_is_published_as_pyta_error(client: LanguageClient) -> None:
+    uri = _open(client, "pylint_comment.py")
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+    diagnostics = list(client.diagnostics[uri])
+    assert [d.code for d in diagnostics] == ["pyta-error"]
+    assert diagnostics[0].range.start.line == 0
+    assert "pylint:" in diagnostics[0].message

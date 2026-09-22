@@ -110,3 +110,28 @@ def test_guard_skips_action_after_cancel(tmp_path: Path) -> None:
 
 def test_guard_skips_action_for_unknown_key() -> None:
     assert CheckScheduler(timeout=30).guard("never-run", lambda: None) is False
+
+
+def test_parallel_runs_are_bounded(tmp_path: Path) -> None:
+    scheduler = CheckScheduler(timeout=30, max_parallel=2)
+    started = time.monotonic()
+    threads = [
+        threading.Thread(target=scheduler.run, args=(key, _echo_argv(key, delay=1.5), str(tmp_path)))
+        for key in ("a", "b", "c")
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    elapsed = time.monotonic() - started
+    assert elapsed >= 2.5, f"three 1.5s runs with a limit of two must take two rounds, took {elapsed:.1f}s"
+    assert elapsed < 6, f"runs should still overlap, took {elapsed:.1f}s"
+
+
+def test_runner_env_forces_utf8_and_redirects_mypy_cache() -> None:
+    from pyta_lsp.scheduler import runner_env
+
+    env = runner_env()
+    assert env["PYTHONIOENCODING"] == "utf-8"
+    assert env["PYTHONUTF8"] == "1"
+    assert env["MYPY_CACHE_DIR"].endswith("pyta-checker-mypy-cache")

@@ -52,3 +52,9 @@ def test_homepage_prefers_home_page_then_matching_project_urls() -> None:
     assert bundle.homepage_from_metadata(_Meta(None, ["Code, https://c"])) == "https://c"
     assert bundle.homepage_from_metadata(_Meta(None, ["Funding, https://f"])) == ""
     assert bundle.homepage_from_metadata(_Meta(None, [])) == ""
+
+
+def test_read_pins_handles_prereleases(tmp_path: Path) -> None:
+    lock = tmp_path / "requirements.lock"
+    lock.write_text("foo==2.7.1rc1 ; python_version < '3.11'\nfoo==2.7.1 ; python_version >= '3.11'\n", encoding="utf-8")
+    assert _load().read_pins(lock) == [("foo", "2.7.1")]

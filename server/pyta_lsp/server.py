@@ -41,7 +41,7 @@ class Settings:
 
 class PytaLanguageServer(LanguageServer):
     def __init__(self) -> None:
-        super().__init__(name="pyta-lsp", version=__version__, max_workers=4)
+        super().__init__(name="pyta-lsp", version=__version__, max_workers=12)
         self.settings = Settings()
         self.scheduler = CheckScheduler()
         self.workspace_root: str | None = None
@@ -69,7 +69,14 @@ class PytaLanguageServer(LanguageServer):
         if result is None:
             return
         if result.get("ok"):
-            diagnostics = [to_diagnostic(m, doc.lines) for m in result.get("messages", [])]
+            try:
+                lines = doc.lines
+            except (OSError, UnicodeDecodeError) as exc:
+                lines = None
+                self.log_to_client(
+                    f"Could not read {path} for positions: {exc}", types.MessageType.Warning
+                )
+            diagnostics = [to_diagnostic(m, lines) for m in result.get("messages", [])]
             for warning in result.get("warnings", []):
                 self.log_to_client(f"{path}: {warning}", types.MessageType.Warning)
         else:

@@ -17,6 +17,7 @@ import tempfile
 import venv
 from importlib.metadata import Distribution
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / "server"
@@ -52,8 +53,10 @@ def _venv_python(root: Path) -> Path:
     return root / "bin" / "python"
 
 
-def _version_key(version: str) -> tuple:
-    return tuple(int(p) if p.isdigit() else p for p in re.split(r"[.\-+]", version))
+def _version_key(version: str) -> Any:
+    from packaging.version import Version
+
+    return Version(version)
 
 
 def read_pins(lock: Path) -> list[tuple[str, str]]:

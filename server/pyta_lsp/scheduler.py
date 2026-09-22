@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 from typing import Any, Callable
 
@@ -15,6 +16,7 @@ def runner_env() -> dict[str, str]:
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    env["MYPY_CACHE_DIR"] = os.path.join(tempfile.gettempdir(), "pyta-checker-mypy-cache")
     return env
 
 
@@ -63,9 +65,10 @@ def _interpret(out: bytes, err: bytes, returncode: int | None, timed_out: bool, 
 
 
 class CheckScheduler:
-    def __init__(self, spawn: Spawn = default_spawn, timeout: float = 60.0) -> None:
+    def __init__(self, spawn: Spawn = default_spawn, timeout: float = 60.0, max_parallel: int = 2) -> None:
         self._spawn = spawn
         self._timeout = timeout
+        self._slots = threading.BoundedSemaphore(max_parallel)
         self._lock = threading.Lock()
         self._generation: dict[str, int] = {}
         self._completed: dict[str, int] = {}
@@ -79,26 +82,27 @@ class CheckScheduler:
         if previous is not None:
             _kill(previous)
 
-        proc = self._spawn(argv, cwd)
-        with self._lock:
-            superseded = self._generation[key] != generation
-            if not superseded:
-                self._procs[key] = proc
-        if superseded:
-            _kill(proc)
-            proc.communicate()
-            return None
+        with self._slots:
+            proc = self._spawn(argv, cwd)
+            with self._lock:
+                superseded = self._generation[key] != generation
+                if not superseded:
+                    self._procs[key] = proc
+            if superseded:
+                _kill(proc)
+                proc.communicate()
+                return None
 
-        timed_out = False
-        try:
-            out, err = proc.communicate(timeout=self._timeout)
-        except subprocess.TimeoutExpired:
-            _kill(proc)
+            timed_out = False
             try:
-                out, err = proc.communicate(timeout=5)
+                out, err = proc.communicate(timeout=self._timeout)
             except subprocess.TimeoutExpired:
-                out, err = b"", b""
-            timed_out = True
+                _kill(proc)
+                try:
+                    out, err = proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    out, err = b"", b""
+                timed_out = True
 
         with self._lock:
             if self._procs.get(key) is proc:
