@@ -145,7 +145,7 @@ Pure function from a pyta JSON message to an LSP diagnostic. Tested in isolation
 | `category` = `error` | severity Error |
 | any other category | severity Warning |
 | `msg_id` | `code` |
-| docs page for the code | `codeDescription.href` (URL format confirmed at implementation) |
+| docs page for the code | `codeDescription.href`: the pyta checkers page with anchor `#<msg_id lowercased>` when the code is documented there (a generated set of documented codes ships in the server), otherwise pylint's per-message page keyed by the lowercased symbol, otherwise the pyta page with no anchor |
 | `symbol` + `msg` | `message` = `"<symbol>: <msg>"` |
 | constant | `source` = `"PythonTA"` |
 
@@ -194,7 +194,7 @@ On first activation (tracked in `globalState`), the extension asks once: "Hide P
 
 Applying the setting (on activation and whenever it changes):
 
-- When true: read the current global values of `python.analysis.ignore` and `basedpyright.analysis.ignore` with `inspect().globalValue`, store them in `globalState` under `pythonta.savedIgnore` unless a saved value already exists, then write `["**"]` to both at Global scope. Then run the restart command of each language server that is installed and active (`python.analysis.restartLanguageServer` for Pylance, `basedpyright.restartserver` for basedpyright; ids confirmed at implementation) so the change applies without a window reload.
+- When true: read the current global values of `python.analysis.ignore` and `basedpyright.analysis.ignore` with `inspect().globalValue`, store them in `globalState` under `pythonta.savedIgnore` unless a saved value already exists, then write `["**"]` to both at Global scope. Then run the restart command of each language server that is installed and active (`python.analysis.restartLanguageServer`, contributed by the Python extension, restarts Pylance; `basedpyright.restartserver`, all lowercase, restarts basedpyright; both ids verified against the shipped extension manifests) so the change applies without a window reload.
 - When false: restore the saved values (or remove the keys if none were saved), clear `pythonta.savedIgnore`, restart the same servers.
 - The extension writes only these two keys and only at Global scope. It never touches workspace settings.
 
@@ -210,7 +210,7 @@ Pyta reports syntax errors itself (`E0001`), so hiding the type checkers' diagno
 4. Delete every `*.so`, `*.pyd`, `*.dylib`, `__pycache__`, and `*.dist-info/RECORD` entry that references them, then fail the build if any compiled file remains anywhere under `bundled/libs`.
 5. Generate `THIRD_PARTY_NOTICES.md` at the repository root from the `*.dist-info` metadata (package, version, license, homepage) and copy each package's license file next to it if pip did not already.
 
-The lockfile is produced by pip-tools inside a throwaway virtual environment created by the same script (`scripts/bundle.py --lock`), pinned to python-ta 2.13.1 and pygls 2.x, and committed. Updating pyta is a one-line change plus re-lock.
+The lockfile is produced by `uv pip compile --universal --python-version 3.10` inside a throwaway virtual environment created by the same script (`scripts/bundle.py lock`), pinned to python-ta 2.13.1 and pygls 2.x, and committed. The build step strips environment markers and installs every pinned package unconditionally, so dependencies that only newer or older Pythons need (for example `tomli` on 3.10) are always present; unused ones are harmless. Updating pyta is a one-line change plus re-lock.
 
 The VSIX includes `bundled/libs`, `dist/extension.js`, `package.json`, `README.md`, `CHANGELOG.md`, `LICENSE`, `THIRD_PARTY_NOTICES.md`. `.vscodeignore` excludes everything else.
 
@@ -269,7 +269,7 @@ Python (`pytest`, run against the developer's interpreter with python-ta install
 - `config_extract`: fixtures with a dict config, a string config, no config, `check_errors`, a non-literal config, an attribute callee, a syntax error in the file (extraction returns "absent" and the runner still reports pyta's E0001).
 - `runner`: end-to-end on the fixtures; asserts `ok`, `config_source`, and that the course-style fixture yields no forbidden-import or forbidden-IO messages while the same file without its config does. Timeout and missing-pyta paths are simulated with a stub module on `PYTHONPATH`.
 - `diagnostics`: table-driven mapping tests including null end positions, each category, and the code URL.
-- `server`: pygls server driven by an in-process client (pytest-lsp or pygls's own test harness, whichever the implementation plan selects) with the runner replaced by a fake subprocess; asserts publish on open, clear on close, cancellation on a second request, and the failure diagnostic.
+- `server`: pygls server driven by an in-process client (pytest-lsp) with the runner replaced by a fake subprocess; asserts publish on open, clear on close, cancellation on a second request, and the failure diagnostic.
 
 TypeScript:
 
