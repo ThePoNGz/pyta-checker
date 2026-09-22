@@ -258,10 +258,11 @@ Passing tests and working hands-on turned out not to mean safe to ship. Every fi
 | `SystemExit` escaped the error handler | A mistyped config path gave zero diagnostics and `runner exited with code 32`, real cause swallowed. | **fixed** |
 | Column base mismatch | Squiggles land on the wrong token on any line with non-ASCII to the left. | **fixed** |
 | `guard()` ignored its own generation | A slow thread could republish stale diagnostics over fresh ones. | **fixed** |
-| Orphaned `mypy` grandchildren | Every superseded check leaks a `mypy` process; the scheduler's limit does not bound them. | open |
+| Orphaned `mypy` grandchildren | Every superseded check leaks a `mypy` process; the scheduler's limit does not bound them. | **fixed** |
+| Non-UTF-8 coding cookie rejected | A PEP 263 cookie such as `cp1252` made the file unreadable. | partly; see below |
 | Reader starvation at 12 open files | Already recorded in section 8. Raised the threshold; did not remove the mechanism. | open |
 | `didOpen` reads disk, maps onto the dirty buffer | After a window reload with unsaved edits, diagnostics can describe text that is not on screen. | open |
-| Stale status bar after restart; no `shutdown`/`exit` handler; shared `/tmp` mypy cache; non-UTF-8 coding cookie rejected; config extraction ignores ownership and reachability | minor | open |
+| Stale status bar after restart; no `shutdown`/`exit` handler; shared `/tmp` mypy cache; config extraction ignores ownership and reachability | minor | open |
 
 ### The fixes, in plain terms
 
@@ -274,6 +275,10 @@ Passing tests and working hands-on turned out not to mean safe to ship. Every fi
 **Column bases.** PythonTA's JSON mixes two conventions in one message list: anything from astroid/pylint reports a UTF-8 *byte* offset, while `E9989` (pycodestyle) and the runner's own `E0001` report *character* offsets. Converting everything would have broken the latter two. The conversion is now per-message, keyed on the code.
 
 **Generation guard.** The guard compared "last completed" against "newest" but never against the generation of the thread actually calling it, so a straggler could publish once a newer run had completed. It now takes its own generation and requires all three to agree.
+
+**Orphaned mypy.** PythonTA runs mypy in a subprocess of its own on every check, with no timeout, and killing the runner left that mypy running — outside `max_parallel`, so save-heavy editing could stack up several at once. The runner is now spawned in its own process group (`CREATE_NEW_PROCESS_GROUP` on Windows, `start_new_session` elsewhere) and killed as a tree (`taskkill /F /T`, or `killpg`). The test proves a real grandchild dies with its parent; the specific mypy case was reproduced by the reviewer but runs too fast to sample reliably on this machine.
+
+**Coding cookies, and an upstream wall.** The runner read every file as UTF-8, so a PEP 263 cookie such as `# -*- coding: cp1252 -*-` made it unreadable. It now uses `tokenize.detect_encoding`, matching what python and pylint do — but PythonTA *itself* then fails on such a file with a `UnicodeDecodeError` from its own reader. Measured directly: python runs the file, `pylint` alone rates it 10.00/10, `python_ta.check_all` raises. So the file now parses correctly (a syntax error in it is reported as `E0001` rather than "could not read file"), but it still cannot be checked. Fixing that properly means transcoding to a temp UTF-8 copy, which is the same machinery as checking the editor's unsaved buffer, so it belongs with that work.
 
 ### Two things worth remembering
 
