@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "bundle.py"
 
 
@@ -58,3 +60,24 @@ def test_read_pins_handles_prereleases(tmp_path: Path) -> None:
     lock = tmp_path / "requirements.lock"
     lock.write_text("foo==2.7.1rc1 ; python_version < '3.11'\nfoo==2.7.1 ; python_version >= '3.11'\n", encoding="utf-8")
     assert _load().read_pins(lock) == [("foo", "2.7.1")]
+
+
+def test_read_pins_raises_on_non_python_version_split(tmp_path: Path) -> None:
+    lock = tmp_path / "requirements.lock"
+    lock.write_text(
+        "foo==1.0.0 ; sys_platform == 'win32'\nfoo==1.1.0 ; sys_platform == 'linux'\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        _load().read_pins(lock)
+
+
+def test_strip_bundle_flags_dll_and_versioned_shared_objects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bundle = _load()
+    monkeypatch.setattr(bundle, "LIBS", tmp_path)
+    pkg = tmp_path / "somepkg"
+    pkg.mkdir()
+    (pkg / "native.dll").write_bytes(b"")
+    (pkg / "libfoo.so.1").write_bytes(b"")
+    with pytest.raises(SystemExit):
+        bundle.strip_bundle()

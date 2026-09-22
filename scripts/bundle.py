@@ -30,7 +30,10 @@ MIN_PY = "3.10"
 SDIST_ONLY = {"aiohttp", "markupsafe"}
 # Packages whose optional C speedups may compile during an sdist build; the binaries are deleted.
 SPEEDUP_OK = {"markupsafe"}
-COMPILED_SUFFIXES = (".so", ".pyd", ".dylib")
+COMPILED_NAME_RE = re.compile(r"\.(so|pyd|dylib|dll)(\.|$)")
+_PY_VERSION_MARKER_VARS = {"python_version", "python_full_version"}
+_MARKER_KEYWORDS = {"and", "or", "not", "in"}
+_MARKER_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 PURE_BUILD_ENV = {
     "AIOHTTP_NO_EXTENSIONS": "1",
     "MULTIDICT_NO_EXTENSIONS": "1",
@@ -59,8 +62,19 @@ def _version_key(version: str) -> Any:
     return Version(version)
 
 
+def _marker_is_python_version_only(marker: str) -> bool:
+    # A marker only compares python_version/python_full_version means the
+    # duplicate version it produced is just a Python-version split, safe to
+    # resolve by taking the max. Anything else (sys_platform, extra, ...)
+    # means the versions are platform- or environment-specific, not a
+    # Python-version split, so the caller must not silently pick one.
+    without_literals = re.sub(r"'[^']*'|\"[^\"]*\"", "", marker)
+    idents = set(_MARKER_IDENT.findall(without_literals)) - _MARKER_KEYWORDS
+    return idents <= _PY_VERSION_MARKER_VARS
+
+
 def read_pins(lock: Path) -> list[tuple[str, str]]:
-    pins: dict[str, str] = {}
+    entries: dict[str, list[tuple[str, str]]] = {}
     order: list[str] = []
     for raw in lock.read_text(encoding="utf-8").splitlines():
         line = raw.split("#", 1)[0].strip()
@@ -69,11 +83,26 @@ def read_pins(lock: Path) -> list[tuple[str, str]]:
             continue
         name = match.group(1).lower().replace("_", "-")
         version = match.group(2)
-        if name not in pins:
+        rest = line[match.end():]
+        marker = rest.split(";", 1)[1].strip() if ";" in rest else ""
+        if name not in entries:
             order.append(name)
-            pins[name] = version
-        elif _version_key(version) > _version_key(pins[name]):
-            pins[name] = version
+            entries[name] = []
+        entries[name].append((version, marker))
+
+    pins: dict[str, str] = {}
+    for name in order:
+        versions = entries[name]
+        distinct = {v for v, _ in versions}
+        if len(distinct) > 1:
+            bad = [m for _, m in versions if not _marker_is_python_version_only(m)]
+            if bad:
+                raise SystemExit(
+                    f"{name} has multiple versions ({', '.join(sorted(distinct))}) split by a "
+                    f"marker that is not a plain Python-version bound ({bad[0]!r}); "
+                    "refusing to guess which one to bundle"
+                )
+        pins[name] = max((v for v, _ in versions), key=_version_key)
     return [(name, pins[name]) for name in order]
 
 
@@ -106,7 +135,7 @@ def strip_bundle() -> None:
     for path in sorted(LIBS.rglob("*"), reverse=True):
         if path.is_dir() and path.name == "__pycache__":
             shutil.rmtree(path, ignore_errors=True)
-        elif path.is_file() and path.suffix in COMPILED_SUFFIXES:
+        elif path.is_file() and COMPILED_NAME_RE.search(path.name):
             top = path.relative_to(LIBS).parts[0].lower()
             if top in SPEEDUP_OK:
                 path.unlink()
