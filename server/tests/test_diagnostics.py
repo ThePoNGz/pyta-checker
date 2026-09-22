@@ -228,4 +228,4 @@ def test_split_lines_only_breaks_where_python_and_the_editor_do() -> None:
     assert split_lines("a\r\nb\rc\nd") == ["a\r\n", "b\r", "c\n", "d"]
     assert split_lines("") == []
     assert split_lines("one line") == ["one line"]
-    assert split_lines("a\x85b c\n") == ["a\x85b c\n"]
+    assert split_lines("a\x85b\u2028c\n") == ["a\x85b\u2028c\n"]

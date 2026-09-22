@@ -923,7 +923,7 @@ def test_a_buffer_behind_a_bom_is_left_alone() -> None:
     # SyntaxError before this ever runs. Rewriting it would only move the line.
     from pyta_lsp.server import normalise_coding_cookie
 
-    source = "﻿# -*- coding: cp1252 -*-\nX = 1\n"
+    source = "\ufeff# -*- coding: cp1252 -*-\nX = 1\n"
     assert normalise_coding_cookie(source) == source
 
 
