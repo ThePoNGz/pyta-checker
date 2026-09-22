@@ -41,7 +41,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await restartServer(context);
   const settings = getSettings();
   if (settings.hideOtherPythonDiagnostics || context.globalState.get(SAVED_KEY)) {
-    await applyOnlyPyta(settings.hideOtherPythonDiagnostics, context, log);
+    try {
+      await applyOnlyPyta(settings.hideOtherPythonDiagnostics, context, log);
+    } catch (error) {
+      log.error(`Only-PythonTA setup failed: ${String(error)}`);
+    }
   }
   void maybePromptFirstRun(context);
 }

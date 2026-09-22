@@ -21,7 +21,15 @@ export async function maybePromptFirstRun(context: vscode.ExtensionContext): Pro
   }
 }
 
-export async function applyOnlyPyta(
+let applying: Promise<void> = Promise.resolve();
+
+export function applyOnlyPyta(enabled: boolean, context: vscode.ExtensionContext, log: vscode.LogOutputChannel): Promise<void> {
+  const next = applying.then(() => applyOnlyPytaNow(enabled, context, log));
+  applying = next.catch(() => undefined);
+  return next;
+}
+
+async function applyOnlyPytaNow(
   enabled: boolean,
   context: vscode.ExtensionContext,
   log: vscode.LogOutputChannel,
@@ -69,7 +77,12 @@ async function restartOtherServers(log: vscode.LogOutputChannel): Promise<void> 
 export async function toggleOnlyPyta(): Promise<void> {
   const config = vscode.workspace.getConfiguration(SECTION);
   const current = config.get<boolean>(SETTING, false);
-  await config.update(SETTING, !current, vscode.ConfigurationTarget.Global);
+  try {
+    await config.update(SETTING, !current, vscode.ConfigurationTarget.Global);
+  } catch {
+    void vscode.window.showErrorMessage('PythonTA: could not change the setting.');
+    return;
+  }
   void vscode.window.showInformationMessage(
     current ? 'PythonTA: other Python problems are visible again.' : 'PythonTA: showing only PythonTA problems.',
   );
