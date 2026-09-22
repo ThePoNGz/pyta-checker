@@ -45,6 +45,14 @@ describe('planEnable', () => {
     expect(plan.saved).toEqual({ python: ['mine'], basedpyright: null });
   });
 
+  it('records a value the user set while Only-PythonTA was on', () => {
+    // A real value on disk can only have come from the user, so it replaces what we
+    // recorded - otherwise a window reload re-asserts the sentinel over their edit
+    // and disabling later hands back the value from two edits ago.
+    const plan = planEnable({ python: ['new'], basedpyright: IGNORE_ALL }, { python: ['old'], basedpyright: ['b'] });
+    expect(plan.saved).toEqual({ python: ['new'], basedpyright: ['b'] });
+  });
+
   it('records the current value for a section a partial snapshot does not cover', () => {
     // A partial snapshot means an earlier restore only half landed. The sections
     // it no longer covers were handed back to the user, so their value now is the

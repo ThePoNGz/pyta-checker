@@ -46,6 +46,19 @@ describe('applyOnlyPyta', () => {
     expect(context.globalState.get(SAVED_KEY)).toEqual({ basedpyright: ['src/generated'] });
   });
 
+  it('re-snapshots a setting the user changed while Only-PythonTA was on', async () => {
+    state.values['python.analysis.ignore'] = ['a'];
+    const context = fakeContext();
+    await applyOnlyPyta(true, context, log);
+
+    // the user edits it by hand, then a window reload re-applies enable
+    state.values['python.analysis.ignore'] = ['new'];
+    await applyOnlyPyta(true, context, log);
+    await applyOnlyPyta(false, context, log);
+
+    expect(state.values['python.analysis.ignore']).toEqual(['new']);
+  });
+
   it('leaves a setting alone when it no longer holds our sentinel', async () => {
     const context = fakeContext();
     await applyOnlyPyta(true, context, log);
