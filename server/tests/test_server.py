@@ -544,3 +544,70 @@ async def test_a_broken_course_config_is_visible_on_the_checked_file(client: Lan
     assert about_config[0].severity == types.DiagnosticSeverity.Information
     assert about_config[0].range.start.line == 0
     assert "cfg.txt" in about_config[0].message
+
+
+def _bare_server(root):
+    """A server with a workspace but no client, for driving check() directly."""
+    from pygls.workspace import Workspace
+
+    from pyta_lsp import server as srv
+
+    ls = srv.PytaLanguageServer()
+    ls.protocol._workspace = Workspace(root.as_uri())
+    ls.notify_status = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    return ls
+
+
+def _captured_spawn(ls) -> list:
+    calls: list = []
+    ls.scheduler.run = lambda key, argv, cwd: calls.append((argv, cwd)) or None  # type: ignore[method-assign]
+    return calls
+
+
+def test_the_runner_is_spawned_in_the_checked_file_s_own_directory(tmp_path) -> None:
+    # sys.path[0] for `python -m` is the spawn directory, so on 3.10, where
+    # PYTHONSAFEPATH does not exist, the cwd is what a student's string.py rides in
+    # on. The staging directory holds only the copy.
+    import os
+
+    path = tmp_path / "a1.py"
+    path.write_text('"""Doc."""\nX = 1\n', encoding="utf-8")
+    ls = _bare_server(tmp_path)
+    calls = _captured_spawn(ls)
+    try:
+        ls.check(path.as_uri())
+    finally:
+        ls.stop_checks()
+
+    argv, cwd = calls[0]
+    target = argv[3]
+    assert os.path.dirname(target) != str(tmp_path), "the file was not staged"
+    assert os.path.normcase(cwd) == os.path.normcase(os.path.dirname(target)), (
+        f"spawned in {cwd}, not beside {target}"
+    )
+
+
+def test_a_package_module_is_spawned_in_its_own_package_directory(tmp_path) -> None:
+    import os
+
+    package = tmp_path / "mypkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    module = package / "mod.py"
+    module.write_bytes(b'"""Doc."""\nX = 1\n')
+    ls = _bare_server(tmp_path)
+    calls = _captured_spawn(ls)
+    try:
+        ls.check(module.as_uri())
+    finally:
+        ls.stop_checks()
+
+    argv, cwd = calls[0]
+    assert os.path.normcase(argv[3]) == os.path.normcase(str(module))
+    assert os.path.normcase(cwd) == os.path.normcase(os.path.dirname(str(module)))
+
+
+def test_the_runner_env_keeps_the_spawn_directory_off_sys_path() -> None:
+    from pyta_lsp.scheduler import runner_env
+
+    assert runner_env()["PYTHONSAFEPATH"] == "1"

@@ -319,3 +319,46 @@ def test_source_dir_resolves_an_embedded_relative_config(tmp_path: Path) -> None
 
     assert result["config_source"] == "embedded"
     assert result["ok"] is True, result["error"]
+
+
+_SIBLING_MARKER = "with open(__file__ + '.MARKER', 'w') as handle:\n    handle.write('ran')\n"
+
+
+def _spawn_like_the_server(cwd: Path, target: str, *args: str) -> subprocess.CompletedProcess:
+    """Spawn the runner the way the scheduler does, environment included."""
+    from pyta_lsp.scheduler import runner_env
+
+    return subprocess.run(
+        [sys.executable, "-m", "pyta_lsp.runner", target, *args],
+        capture_output=True,
+        text=True,
+        env=runner_env(),
+        cwd=str(cwd),
+    )
+
+
+def test_a_sibling_named_after_a_stdlib_module_is_not_imported_at_startup(tmp_path: Path) -> None:
+    # python -m puts the spawn directory at sys.path[0] before the runner's own
+    # module-level imports run, and strip_cwd_from_path only runs inside main(),
+    # so a student's string.py is imported and executed before it can be removed.
+    (tmp_path / "string.py").write_text(_SIBLING_MARKER, encoding="utf-8")
+    (tmp_path / "a1.py").write_text('"""Doc."""\nX = 1\n', encoding="utf-8")
+
+    proc = _spawn_like_the_server(tmp_path, "a1.py")
+
+    assert not (tmp_path / "string.py.MARKER").exists(), "the student's module was executed"
+    data = json.loads(proc.stdout)
+    assert data["ok"] is True, data["error"]
+
+
+def test_a_sibling_random_module_is_not_imported_by_the_mypy_subprocess(tmp_path: Path) -> None:
+    # python_ta's StaticTypeChecker spawns `python -m mypy` with the runner's cwd,
+    # and mypy's own startup imports tempfile, which imports random.
+    (tmp_path / "random.py").write_text(_SIBLING_MARKER, encoding="utf-8")
+    (tmp_path / "a1.py").write_text('"""Doc."""\nCOUNT: int = 1\n', encoding="utf-8")
+
+    proc = _spawn_like_the_server(tmp_path, "a1.py")
+
+    assert not (tmp_path / "random.py.MARKER").exists(), "the student's module was executed"
+    data = json.loads(proc.stdout)
+    assert data["ok"] is True, data["error"]

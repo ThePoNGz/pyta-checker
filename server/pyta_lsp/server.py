@@ -177,7 +177,10 @@ class PytaLanguageServer(LanguageServer):
                 root = select_workspace_root(self.workspace_folders, path)
                 if root:
                     argv += ["--workspace-root", root]
-            result = self.scheduler.run(uri, argv, source_dir)
+            # On 3.10 PYTHONSAFEPATH does nothing, so sys.path[0] is whatever the
+            # runner is spawned in. The staging directory holds only the copy; for
+            # a package module that has to stay put it is the package directory.
+            result = self.scheduler.run(uri, argv, os.path.dirname(target))
         finally:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)

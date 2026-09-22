@@ -32,6 +32,11 @@ def runner_env() -> dict[str, str]:
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    # 3.11+. Keeps the spawn directory off sys.path[0] before the runner's own
+    # imports run, and mypy inherits it, so a student's string.py or random.py
+    # beside the checked file is never imported. Ignored on 3.10, where the cwd
+    # the server chooses is what limits the damage.
+    env["PYTHONSAFEPATH"] = "1"
     # On a shared /tmp the first user to create a fixed cache directory owns it,
     # and mypy then fails for everyone else. python_ta ignores mypy's return code,
     # so E9951-E9956 would vanish with no error shown.
