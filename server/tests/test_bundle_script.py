@@ -30,3 +30,25 @@ def test_read_pins_strips_markers_comments_and_dedupes(tmp_path: Path) -> None:
         ("colorama", "0.4.6"),
         ("tomli", "2.2.1"),
     ]
+
+
+class _Meta:
+    def __init__(self, home, urls) -> None:
+        self._home = home
+        self._urls = urls
+
+    def get(self, key, default=None):
+        return self._home if key == "Home-page" else default
+
+    def get_all(self, key, default=None):
+        return list(self._urls) if key == "Project-URL" else (default or [])
+
+
+def test_homepage_prefers_home_page_then_matching_project_urls() -> None:
+    bundle = _load()
+    assert bundle.homepage_from_metadata(_Meta("https://h", ["Source Code, https://s"])) == "https://h"
+    assert bundle.homepage_from_metadata(_Meta(None, ["Source Code, https://s"])) == "https://s"
+    assert bundle.homepage_from_metadata(_Meta(None, ["GitHub, https://g", "Homepage, https://h"])) == "https://h"
+    assert bundle.homepage_from_metadata(_Meta(None, ["Code, https://c"])) == "https://c"
+    assert bundle.homepage_from_metadata(_Meta(None, ["Funding, https://f"])) == ""
+    assert bundle.homepage_from_metadata(_Meta(None, [])) == ""
