@@ -30,7 +30,7 @@ Students who use a strict type checker such as basedpyright also see a wall of d
 2. Match the grader. Honor the `check_all(config=...)` block embedded in the file.
 3. Only pyta. Optionally hide Pylance and basedpyright diagnostics so the student sees one source of truth. Autocomplete keeps working.
 4. Editor-agnostic core. The checker is a standalone language server so other editors (Zed first) can reuse it later.
-5. Never execute student code. The checker parses files; it does not run them.
+5. Never execute the student's file. The checker parses files; it does not run them. PythonTA config files can execute code through pylint's `init-hook`, so the extension requires a trusted workspace.
 
 ### Non-goals for this version
 
@@ -111,7 +111,7 @@ Execution environment:
 
 - Working directory is the file's folder and it is first on `sys.path`, so sibling modules resolve the way they do when the course runs the file.
 - Environment forces UTF-8 (`PYTHONIOENCODING=utf-8`, `PYTHONUTF8=1`) because pyta emits non-ASCII characters and crashes on Windows code pages otherwise.
-- When the extension uses the bundled libraries, `PYTHONPATH` points at `bundled/libs` and the runner inserts that directory at the front of `sys.path`. When the import strategy is "from environment", `PYTHONPATH` is not set and the interpreter's own python-ta is used; if it is missing, the runner exits non-zero with a clear message and the server reports it.
+- The extension always puts `bundled/libs` on `PYTHONPATH` (the server itself needs the bundled pygls). With import strategy `fromEnvironment` the runner moves that directory to the end of `sys.path` before importing python_ta, so an installed python_ta wins and the bundle is the fallback.
 - The runner never imports or executes the checked file. Pyta itself performs static analysis only.
 
 ### 4.2 Language server (`pyta_lsp/server.py`)
@@ -159,11 +159,13 @@ Interpreter selection, in order:
 
 1. `pythonta.interpreter` setting if set (absolute path).
 2. The Microsoft Python extension's active environment, resolved to check `version.major.minor >= 3.10`.
-3. `python3` then `python` then `py -3` on PATH, probed with `-c "import sys; print(sys.version_info[:2])"`.
+3. `python`, `python3`, then `py` on Windows; `python3`, `python` elsewhere, probed with `-c "import sys; print(sys.version_info[:2])"`.
 
 If none qualifies, the extension does not start the server and shows an error notification with buttons "Select Interpreter" (runs `python.setInterpreter`) and "How to install Python" (opens the course-neutral python.org download page). The status bar shows the error state. The extension listens to `onDidChangeActiveEnvironmentPath` and restarts the server when the interpreter changes.
 
-Server launch: `LanguageClient` with an `Executable` server option: command is the chosen interpreter, args `["-m", "pyta_lsp"]`, `cwd` is the extension directory, env adds `PYTHONPATH=<ext>/bundled/libs` (when `importStrategy` is `useBundled`), `PYTHONIOENCODING=utf-8`, `PYTHONUTF8=1`. Document selector: `{ scheme: "file", language: "python" }`. The `pythonta` configuration section is passed as `initializationOptions` and synchronized on change. Output goes to a `LogOutputChannel` named "PythonTA".
+`pythonta.interpreter` has configuration scope `machine`, so a workspace cannot override the executable; `configPath` is `machine-overridable`; the manifest declares `capabilities.untrustedWorkspaces.supported = false`.
+
+Server launch: `LanguageClient` with an `Executable` server option: command is the chosen interpreter, args `["-m", "pyta_lsp"]`, `cwd` is the extension directory, env adds `PYTHONPATH=<ext>/bundled/libs` (always), `PYTA_LSP_LIBS`, `PYTA_LSP_IMPORT_STRATEGY`, `PYTHONIOENCODING=utf-8`, `PYTHONUTF8=1`, `PYTHONUNBUFFERED=1`. Document selector: `{ scheme: "file", language: "python" }`. The `pythonta` configuration section is passed as `initializationOptions` and synchronized on change. Output goes to a `LogOutputChannel` named "PythonTA".
 
 Commands:
 

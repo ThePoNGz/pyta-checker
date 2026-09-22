@@ -9,13 +9,15 @@ Built for University of Toronto courses (CSC108, CSC110/111, CSC148) that grade 
 - **No install step.** PythonTA and everything it needs ship inside the extension. You need Python 3.10 or newer on your machine, which the course already requires, and nothing else.
 - **Matches the grader.** Course starter files end with `python_ta.check_all(config={...})`. This extension reads that block and applies the same config, so you do not get false positives like "forbidden import random" that the grader would never report.
 - **Only PythonTA, if you want.** Optionally hide Pylance and basedpyright problems so the Problems panel shows one source of truth. Autocomplete keeps working.
-- **Never runs your code.** Files are parsed, not executed.
+- **Never runs your file.** Files are parsed, not executed. A PythonTA config file can run code through pylint's `init-hook`, which is one reason the extension only activates in a trusted workspace.
 
 ## Install
 
 1. Install [Python 3.10+](https://www.python.org/downloads/) if you have not already.
 2. Install **PythonTA Checker** from the VS Code Marketplace. The Python extension is installed with it automatically.
 3. Open a `.py` file. Problems appear on open and on save. Click the `PyTA` item in the status bar to re-check.
+
+The extension only activates in a trusted workspace (VS Code asks you to trust a folder the first time you open it).
 
 If nothing appears, open **View > Output** and pick **PythonTA** from the dropdown. The log says which Python was found and what the server did.
 
@@ -44,7 +46,7 @@ If nothing appears, open **View > Output** and pick **PythonTA** from the dropdo
 
 For each file, in order:
 
-1. The `config=` argument of the first `check_all(...)` or `check_errors(...)` call in the file. A dict literal is used directly; a string is a path relative to the file.
+1. The `config=` keyword argument of the first `check_all(...)` or `check_errors(...)` call in the file. A dict literal is used directly; a string is a path relative to the file.
 2. `pythonta.configPath`, if set.
 3. PythonTA's defaults.
 
@@ -74,7 +76,7 @@ Update PythonTA: change the pin in `server/requirements.in`, run `python scripts
 
 ## Releasing
 
-1. Bump `version` in `package.json` and `server/pyproject.toml`, update `CHANGELOG.md`, commit.
+1. Bump `version` in `package.json`, `server/pyproject.toml`, and `server/pyta_lsp/__init__.py`, update `CHANGELOG.md`, commit.
 2. `git tag vX.Y.Z && git push --tags`. The release workflow builds the VSIX, attaches it to a GitHub release, and publishes to the Marketplace.
 
 Marketplace publishing needs a one-time setup by the repository owner:

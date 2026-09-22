@@ -7,6 +7,7 @@ build/
 dist/
 server/dist/
 .pytest_cache/
+.mypy_cache/
 # Node
 node_modules/
 out/
