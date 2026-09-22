@@ -1,5 +1,13 @@
 import * as vscode from 'vscode';
-import { TARGETS, isUnregisteredSettingError, planDisable, planEnable, type Snapshot, type Write } from './onlyPytaLogic';
+import {
+  TARGETS,
+  isUnregisteredSettingError,
+  newlyClaimed,
+  planDisable,
+  planEnable,
+  type Snapshot,
+  type Write,
+} from './onlyPytaLogic';
 import { SECTION } from './settings';
 
 export const SAVED_KEY = 'pythonta.savedIgnore';
@@ -36,6 +44,8 @@ async function applyOnlyPytaNow(
 ): Promise<void> {
   const saved = context.globalState.get<Snapshot>(SAVED_KEY);
   let writes: Write[];
+  let owed: Snapshot;
+  let claiming: Set<string>;
   if (enabled) {
     const current: Snapshot = {};
     for (const target of TARGETS) {
@@ -43,20 +53,30 @@ async function applyOnlyPytaNow(
       current[target.section] = inspected?.globalValue === undefined ? null : inspected.globalValue;
     }
     const plan = planEnable(current, saved);
+    // Written before the overwrites so a crash mid-loop cannot lose the originals;
+    // reconciled against what actually landed once the loop is done.
     await context.globalState.update(SAVED_KEY, plan.saved);
+    owed = { ...plan.saved };
+    claiming = newlyClaimed(saved, plan.saved);
     writes = plan.writes;
   } else {
+    owed = { ...saved };
+    claiming = new Set();
     writes = planDisable(saved);
   }
-  const unrestored: Snapshot = { ...saved };
   for (const write of writes) {
     try {
       await vscode.workspace.getConfiguration(write.section).update(write.key, write.value, vscode.ConfigurationTarget.Global);
-      delete unrestored[write.section];
+      if (!enabled) {
+        delete owed[write.section];
+      }
       log.info(`${enabled ? 'Set' : 'Restored'} ${write.section}.${write.key}`);
     } catch (error) {
-      // A refused write leaves the old value in place whatever the reason, so the
-      // reason only picks the log line.
+      // A refused write changes nothing, so it neither claims a setting on enable
+      // nor discharges what we owe on disable. The reason only picks the log line.
+      if (claiming.has(write.section)) {
+        delete owed[write.section];
+      }
       if (isUnregisteredSettingError(error)) {
         log.info(`Skipping ${write.section}.${write.key} (extension not installed)`);
       } else {
@@ -64,12 +84,9 @@ async function applyOnlyPytaNow(
       }
     }
   }
-  // The snapshot is the only record of the user's original values. Keep exactly
-  // the entries we still owe back; anything restored is theirs to change again.
-  if (!enabled) {
-    const remaining = Object.keys(unrestored).length > 0 ? unrestored : undefined;
-    await context.globalState.update(SAVED_KEY, remaining);
-  }
+  // The snapshot is the only record of the user's original values: it holds exactly
+  // the settings we have overwritten and still owe back.
+  await context.globalState.update(SAVED_KEY, Object.keys(owed).length > 0 ? owed : undefined);
   await restartOtherServers(log);
 }
 

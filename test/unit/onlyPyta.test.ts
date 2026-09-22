@@ -46,6 +46,37 @@ describe('applyOnlyPyta', () => {
     expect(context.globalState.get(SAVED_KEY)).toEqual({ basedpyright: ['src/generated'] });
   });
 
+  it('does not claim a setting whose enable write was refused', async () => {
+    // basedpyright is not installed, so our ignore-all never lands on it. Recording
+    // it anyway means a later disable "restores" a setting we never touched.
+    state.rejects['basedpyright.analysis.ignore'] = UNREGISTERED;
+    const context = fakeContext();
+
+    await applyOnlyPyta(true, context, log);
+    expect(context.globalState.get(SAVED_KEY)).toEqual({ python: null });
+
+    // the student installs basedpyright and configures it themselves
+    delete state.rejects['basedpyright.analysis.ignore'];
+    state.values['basedpyright.analysis.ignore'] = ['mine'];
+    await applyOnlyPyta(false, context, log);
+
+    expect(state.values['basedpyright.analysis.ignore']).toEqual(['mine']);
+  });
+
+  it('keeps an entry owed from an earlier cycle when a new write is refused', async () => {
+    state.values['basedpyright.analysis.ignore'] = ['b'];
+    const context = fakeContext();
+
+    await applyOnlyPyta(true, context, log);
+    state.rejects['basedpyright.analysis.ignore'] = UNREGISTERED;
+    await applyOnlyPyta(false, context, log);
+    expect(context.globalState.get(SAVED_KEY)).toEqual({ basedpyright: ['b'] });
+
+    await applyOnlyPyta(true, context, log);
+
+    expect(context.globalState.get(SAVED_KEY)).toEqual({ basedpyright: ['b'], python: null });
+  });
+
   it('does not overwrite a value the user changed after a partial restore', async () => {
     state.values['python.analysis.ignore'] = ['a'];
     state.values['basedpyright.analysis.ignore'] = ['b'];

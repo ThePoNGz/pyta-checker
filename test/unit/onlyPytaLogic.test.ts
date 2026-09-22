@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { IGNORE_ALL, TARGETS, isUnregisteredSettingError, planDisable, planEnable } from '../../src/onlyPytaLogic';
+import {
+  IGNORE_ALL,
+  TARGETS,
+  isUnregisteredSettingError,
+  newlyClaimed,
+  planDisable,
+  planEnable,
+} from '../../src/onlyPytaLogic';
 
 describe('TARGETS', () => {
   it('covers pylance (via the python extension) and basedpyright with verified command ids', () => {
@@ -77,5 +84,15 @@ describe('isUnregisteredSettingError', () => {
   it('does not excuse a real write failure', () => {
     // A read-only or malformed settings.json must keep the snapshot alive.
     expect(isUnregisteredSettingError(new Error('EACCES: permission denied, open settings.json'))).toBe(false);
+  });
+});
+
+describe('newlyClaimed', () => {
+  it('claims only sections an earlier cycle was not already owed', () => {
+    expect(newlyClaimed({ basedpyright: ['b'] }, { basedpyright: ['b'], python: ['p'] })).toEqual(new Set(['python']));
+  });
+
+  it('claims every section when there is no snapshot yet', () => {
+    expect(newlyClaimed(undefined, { python: null, basedpyright: null })).toEqual(new Set(['python', 'basedpyright']));
   });
 });

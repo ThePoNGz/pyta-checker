@@ -54,6 +54,11 @@ export function planEnable(current: Snapshot, saved: Snapshot | undefined): { sa
   };
 }
 
+/** Sections this cycle claims for the first time; an earlier cycle's debt is not ours to drop. */
+export function newlyClaimed(saved: Snapshot | undefined, next: Snapshot): Set<string> {
+  return new Set(Object.keys(next).filter((section) => saved === undefined || !(section in saved)));
+}
+
 export function planDisable(saved: Snapshot | undefined): Write[] {
   if (!saved) {
     return [];
