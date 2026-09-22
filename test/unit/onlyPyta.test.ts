@@ -41,7 +41,28 @@ describe('applyOnlyPyta', () => {
     state.rejects['basedpyright.analysis.ignore'] = UNREGISTERED;
     await applyOnlyPyta(false, context, log);
 
-    expect(context.globalState.get(SAVED_KEY)).toEqual({ python: null, basedpyright: ['src/generated'] });
+    // python restored cleanly, so we no longer owe it anything; only the refused
+    // entry stays behind.
+    expect(context.globalState.get(SAVED_KEY)).toEqual({ basedpyright: ['src/generated'] });
+  });
+
+  it('does not overwrite a value the user changed after a partial restore', async () => {
+    state.values['python.analysis.ignore'] = ['a'];
+    state.values['basedpyright.analysis.ignore'] = ['b'];
+    const context = fakeContext();
+
+    await applyOnlyPyta(true, context, log);
+    state.rejects['basedpyright.analysis.ignore'] = UNREGISTERED;
+    await applyOnlyPyta(false, context, log);
+    expect(state.values['python.analysis.ignore']).toEqual(['a']);
+
+    // python is the user's again, so what they set now is what a later disable owes
+    // them - not the value we snapshotted two toggles ago.
+    state.values['python.analysis.ignore'] = ['c'];
+    await applyOnlyPyta(true, context, log);
+    await applyOnlyPyta(false, context, log);
+
+    expect(state.values['python.analysis.ignore']).toEqual(['c']);
   });
 
   it('drops the snapshot once every restore write lands', async () => {

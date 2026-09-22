@@ -48,15 +48,15 @@ async function applyOnlyPytaNow(
   } else {
     writes = planDisable(saved);
   }
-  let restoreFailed = false;
+  const unrestored: Snapshot = { ...saved };
   for (const write of writes) {
     try {
       await vscode.workspace.getConfiguration(write.section).update(write.key, write.value, vscode.ConfigurationTarget.Global);
+      delete unrestored[write.section];
       log.info(`${enabled ? 'Set' : 'Restored'} ${write.section}.${write.key}`);
     } catch (error) {
       // A refused write leaves the old value in place whatever the reason, so the
       // reason only picks the log line.
-      restoreFailed = true;
       if (isUnregisteredSettingError(error)) {
         log.info(`Skipping ${write.section}.${write.key} (extension not installed)`);
       } else {
@@ -64,10 +64,11 @@ async function applyOnlyPytaNow(
       }
     }
   }
-  // The snapshot is the only record of the user's original values, so drop it
-  // only once the restore has actually landed.
-  if (!enabled && !restoreFailed) {
-    await context.globalState.update(SAVED_KEY, undefined);
+  // The snapshot is the only record of the user's original values. Keep exactly
+  // the entries we still owe back; anything restored is theirs to change again.
+  if (!enabled) {
+    const remaining = Object.keys(unrestored).length > 0 ? unrestored : undefined;
+    await context.globalState.update(SAVED_KEY, remaining);
   }
   await restartOtherServers(log);
 }

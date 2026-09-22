@@ -37,6 +37,14 @@ describe('planEnable', () => {
     const plan = planEnable({ python: ['mine'], basedpyright: IGNORE_ALL }, undefined);
     expect(plan.saved).toEqual({ python: ['mine'], basedpyright: null });
   });
+
+  it('records the current value for a section a partial snapshot does not cover', () => {
+    // A partial snapshot means an earlier restore only half landed. The sections
+    // it no longer covers were handed back to the user, so their value now is the
+    // one we owe them.
+    const plan = planEnable({ python: ['changed'], basedpyright: IGNORE_ALL }, { basedpyright: ['b'] });
+    expect(plan.saved).toEqual({ python: ['changed'], basedpyright: ['b'] });
+  });
 });
 
 describe('planDisable', () => {
@@ -49,6 +57,12 @@ describe('planDisable', () => {
 
   it('writes nothing when there is no snapshot', () => {
     expect(planDisable(undefined)).toEqual([]);
+  });
+
+  it('leaves alone a section the snapshot does not cover', () => {
+    expect(planDisable({ basedpyright: ['b'] })).toEqual([
+      { section: 'basedpyright', key: 'analysis.ignore', value: ['b'] },
+    ]);
   });
 });
 
