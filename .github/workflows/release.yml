@@ -31,6 +31,10 @@ jobs:
             echo "tag ${GITHUB_REF_NAME} does not match package.json version ${expected}"; exit 1
           fi
       - run: npm ci
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e "server[dev]"
+      - run: python -m pytest server/tests -q
+      - run: npm test
       - run: python scripts/bundle.py build
       - run: npm run build:prod
       - run: npx @vscode/vsce package --no-dependencies -o "pyta-checker-${GITHUB_REF_NAME}.vsix"

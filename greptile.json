@@ -26,7 +26,7 @@
         "scope": ["server/pyta_lsp/scheduler.py"]
       },
       {
-        "rule": "Handlers must not block a pygls worker on a subprocess. That pool also serves the stdin reader, so work that waits belongs on the server's own executor.",
+        "rule": "Handlers must not block a pygls worker on a subprocess. That pool also serves the stdin reader, so work that waits belongs on the server's own executor. The accepted exception is did_close, whose cancel can wait on one tree-kill: at most max_parallel (2) of the 12 workers can be held that way, and shutdown may already have closed the server's executor.",
         "scope": ["server/pyta_lsp/server.py"]
       },
       {
