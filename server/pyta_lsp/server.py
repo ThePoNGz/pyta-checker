@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
+import tokenize
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
@@ -70,6 +71,17 @@ def is_package_module(path: str) -> bool:
     return os.path.isfile(os.path.join(os.path.dirname(path), "__init__.py"))
 
 
+def matches_disk(path: str, source: str) -> bool:
+    """Whether the buffer is what a checker reading the file would see."""
+    try:
+        with open(path, "rb") as handle:
+            encoding, _ = tokenize.detect_encoding(handle.readline)
+        with open(path, "r", encoding=encoding, newline="") as handle:
+            return handle.read() == source
+    except (OSError, UnicodeDecodeError, SyntaxError, LookupError):
+        return False
+
+
 class PytaLanguageServer(LanguageServer):
     def __init__(self) -> None:
         super().__init__(name="pyta-lsp", version=__version__, max_workers=12)
@@ -116,6 +128,17 @@ class PytaLanguageServer(LanguageServer):
         # Staging is what lets a dirty buffer or a non-UTF-8 file be checked at all,
         # but a package module has to stay where it is.
         stage = source is not None and not is_package_module(path)
+        if source is not None and not stage and not matches_disk(path, source):
+            # Nothing correct is available: the buffer cannot be checked where it is,
+            # and the file on disk is not what the student is looking at.
+            reason = "unsaved changes in a package module cannot be checked; save the file first"
+            self.log_to_client(f"{path}: {reason}", types.MessageType.Warning)
+            diagnostics = [failure_diagnostic(reason)]
+            self.text_document_publish_diagnostics(
+                types.PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics)
+            )
+            self.notify_status(uri, "done", len(diagnostics))
+            return
         staging = tempfile.mkdtemp(prefix="pyta-lsp-") if stage else None
         try:
             target = path
@@ -190,10 +213,9 @@ def did_close(ls: PytaLanguageServer, params: types.DidCloseTextDocumentParams) 
     ls.clear(params.text_document.uri)
 
 
-@server.thread()
 @server.command(CHECK_COMMAND)
 def command_check(ls: PytaLanguageServer, uri: str) -> None:
-    ls.check(uri)
+    ls.schedule_check(uri)
 
 
 @server.thread()

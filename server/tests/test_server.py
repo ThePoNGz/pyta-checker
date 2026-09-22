@@ -267,3 +267,61 @@ async def test_a_package_module_is_not_given_false_import_errors(
     await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
 
     assert "E0611" not in {d.code for d in client.diagnostics[uri]}
+
+
+async def test_unsaved_changes_in_a_package_module_are_reported_not_guessed(
+    client: LanguageClient, tmp_path
+) -> None:
+    # A package module cannot be checked from a copy, so when the buffer differs
+    # from disk there is nothing correct to check. Checking disk anyway and mapping
+    # the result onto the buffer puts diagnostics on lines the student never wrote.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    package = tmp_path / "mypkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    module = package / "mod.py"
+    module.write_text('"""Doc."""\nX = 1\n', encoding="utf-8")
+    uri = module.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri,
+                language_id="python",
+                version=1,
+                text='"""Doc."""\nimport os\n\nX = 1\n',
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    assert FAILURE_CODE in {d.code for d in client.diagnostics[uri]}
+
+
+def test_the_check_command_does_not_occupy_a_protocol_worker() -> None:
+    # Same pool as the stdin reader: an explicit check that waits on its subprocess
+    # there delays every later message just as an automatic one would.
+    import threading
+    import time
+
+    from pyta_lsp import server as srv
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Blocking(srv.PytaLanguageServer):
+        def check(self, uri: str) -> None:
+            entered.set()
+            release.wait(10)
+
+    ls = Blocking()
+    started = time.monotonic()
+    try:
+        srv.command_check(ls, "file:///tmp/a1.py")
+        elapsed = time.monotonic() - started
+        assert entered.wait(5), "the check never ran"
+    finally:
+        release.set()
+
+    assert elapsed < 0.5, f"the command blocked for {elapsed:.1f}s waiting on the check"
