@@ -1,7 +1,9 @@
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from pyta_lsp.runner import ENV_LIBS, ENV_STRATEGY, apply_import_strategy, run_check
@@ -324,23 +326,29 @@ def test_source_dir_resolves_an_embedded_relative_config(tmp_path: Path) -> None
 _SIBLING_MARKER = "with open(__file__ + '.MARKER', 'w') as handle:\n    handle.write('ran')\n"
 
 
-def _spawn_like_the_server(cwd: Path, target: str, *args: str) -> subprocess.CompletedProcess:
-    """Spawn the runner the way the scheduler does, environment included."""
+def _spawn_like_the_server(source_dir: Path, name: str) -> subprocess.CompletedProcess:
+    """Spawn the runner the way the server does: from an empty directory, with the
+    student's folder passed as --source-dir rather than used as the cwd."""
     from pyta_lsp.scheduler import runner_env
 
-    return subprocess.run(
-        [sys.executable, "-m", "pyta_lsp.runner", target, *args],
-        capture_output=True,
-        text=True,
-        env=runner_env(),
-        cwd=str(cwd),
-    )
+    spawn_dir = tempfile.mkdtemp(prefix="pyta-lsp-test-")
+    try:
+        return subprocess.run(
+            [sys.executable, "-m", "pyta_lsp.runner", str(source_dir / name), "--source-dir", str(source_dir)],
+            capture_output=True,
+            text=True,
+            env=runner_env(),
+            cwd=spawn_dir,
+        )
+    finally:
+        shutil.rmtree(spawn_dir, ignore_errors=True)
 
 
 def test_a_sibling_named_after_a_stdlib_module_is_not_imported_at_startup(tmp_path: Path) -> None:
     # python -m puts the spawn directory at sys.path[0] before the runner's own
-    # module-level imports run, and strip_cwd_from_path only runs inside main(),
-    # so a student's string.py is imported and executed before it can be removed.
+    # module-level imports run, and strip_cwd_from_path only runs inside main().
+    # The server therefore never spawns in the student's folder; on 3.11+
+    # PYTHONSAFEPATH covers the same ground.
     (tmp_path / "string.py").write_text(_SIBLING_MARKER, encoding="utf-8")
     (tmp_path / "a1.py").write_text('"""Doc."""\nX = 1\n', encoding="utf-8")
 

@@ -414,6 +414,17 @@ class _QuietProc:
         return b'{"ok": true, "messages": []}', b""
 
 
+class _RunningProc(_QuietProc):
+    """A runner that stays alive until something kills it."""
+
+    def __init__(self) -> None:
+        self.dead = threading.Event()
+
+    def communicate(self, timeout=None):
+        self.dead.wait(10)
+        return b"", b""
+
+
 def test_a_spawned_process_is_always_in_the_cancel_all_snapshot(monkeypatch, tmp_path: Path) -> None:
     # cancel_all snapshots _procs. While the stopped check, the spawn and the
     # registration are three separate critical sections, a cancel_all landing
@@ -423,10 +434,12 @@ def test_a_spawned_process_is_always_in_the_cancel_all_snapshot(monkeypatch, tmp
     from pyta_lsp import scheduler as sched
 
     killed: list[tuple[str, int]] = []
-    monkeypatch.setattr(
-        sched, "_kill", lambda proc: killed.append((threading.current_thread().name, proc.pid))
-    )
-    proc = _QuietProc()
+    def record_kill(proc):
+        killed.append((threading.current_thread().name, proc.pid))
+        proc.dead.set()
+
+    monkeypatch.setattr(sched, "_kill", record_kill)
+    proc = _RunningProc()
     spawning = threading.Event()
 
     def slow_spawn(argv, cwd):
