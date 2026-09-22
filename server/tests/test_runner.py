@@ -120,7 +120,7 @@ def test_log_captures_logging_output_across_repeated_calls(fixtures: Path, monke
     import sys
     import types
 
-    def fake_check_all(path, config=None, output=None, pylint_args=None):
+    def fake_check_all(path, config=None, output=None, load_default_config=True, pylint_args=None):
         logging.getLogger("python_ta.fake").warning("logged by pyta")
         output.write("[]")
 
@@ -254,6 +254,54 @@ def test_source_dir_keeps_sibling_imports_resolvable_for_a_staged_copy(tmp_path:
 
     assert "E0401" in _codes(without)
     assert "E0401" not in _codes(with_dir)
+
+
+def _course_file(tmp_path: Path, name: str, extra: str) -> Path:
+    path = tmp_path / name
+    path.write_text(
+        '"""Doc."""\nbadName = 1\nprint(badName)\n\n'
+        'if __name__ == "__main__":\n'
+        "    import python_ta\n"
+        f'    python_ta.check_all(config="course.txt"{extra})\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_load_default_config_false_is_forwarded_to_pyta(tmp_path: Path) -> None:
+    # PythonTA's own defaults disable C0103 in favour of its C9103. A course file
+    # that turns the defaults off gets C0103 when it runs the check itself, so the
+    # server has to turn them off too or the squiggles differ from the grader's.
+    (tmp_path / "course.txt").write_text("[FORMAT]\nmax-line-length=100\n", encoding="utf-8")
+
+    merged = run_check(_course_file(tmp_path, "merged.py", ""))
+    own = run_check(_course_file(tmp_path, "own.py", ", load_default_config=False"))
+
+    assert merged["ok"] is True, merged["error"]
+    assert own["ok"] is True, own["error"]
+    assert "C0103" not in _codes(merged)
+    assert "C0103" in _codes(own), "the defaults were merged in anyway"
+
+
+def test_a_message_about_the_config_file_is_not_pinned_on_the_checked_file(tmp_path: Path) -> None:
+    # PythonTA's reporter keeps one entry per file it saw and drops only the
+    # non-.py ones with no messages, so a bad option in the course config arrives
+    # in the same list carrying cfg.txt's own line numbers.
+    (tmp_path / "cfg.txt").write_text(
+        "[MESSAGES CONTROL]\ndisable=not-a-real-message\n", encoding="utf-8"
+    )
+    (tmp_path / "a1.py").write_text(
+        '"""Doc."""\nX = 1\n\nif __name__ == "__main__":\n'
+        '    import python_ta\n    python_ta.check_all(config="cfg.txt")\n',
+        encoding="utf-8",
+    )
+
+    result = run_check(tmp_path / "a1.py")
+
+    assert result["ok"] is True, result["error"]
+    strays = [m for m in result["messages"] if "cfg.txt" in str(m.get("path"))]
+    assert strays == [], f"messages from another file were attributed here: {strays}"
+    assert any("W0012" in w for w in result["warnings"]), result["warnings"]
 
 
 def test_source_dir_resolves_an_embedded_relative_config(tmp_path: Path) -> None:

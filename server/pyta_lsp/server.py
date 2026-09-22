@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import tokenize
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -113,6 +114,17 @@ class PytaLanguageServer(LanguageServer):
         self.scheduler.cancel_all()
         self._checks.shutdown(wait=False, cancel_futures=True)
 
+    def begin_stop_checks(self) -> threading.Thread:
+        """Start stop_checks off the event loop.
+
+        Killing a tree waits on taskkill, and the loop that would be waiting also
+        reads stdin. The thread is not a daemon, so the interpreter joins it and
+        the tree is dead before the process is.
+        """
+        thread = threading.Thread(target=self.stop_checks, name="pyta-stop-checks")
+        thread.start()
+        return thread
+
     def notify_status(self, uri: str, state: str, count: int | None = None) -> None:
         self.protocol.notify(STATUS_NOTIFICATION, {"uri": uri, "state": state, "count": count})
 
@@ -190,8 +202,10 @@ class PytaLanguageServer(LanguageServer):
         self.scheduler.guard(uri, generation, publish)
 
     def clear(self, uri: str) -> None:
-        self.scheduler.cancel(uri)
+        # Publish first: the cancel can wait on taskkill, and a reopen checked in
+        # the meantime must not have its results wiped afterwards.
         self.text_document_publish_diagnostics(types.PublishDiagnosticsParams(uri=uri, diagnostics=[]))
+        self.scheduler.cancel(uri)
 
 
 server = PytaLanguageServer()
@@ -221,9 +235,16 @@ def did_save(ls: PytaLanguageServer, params: types.DidSaveTextDocumentParams) ->
 
 @server.feature(types.SHUTDOWN)
 def on_shutdown(ls: PytaLanguageServer, params: Any = None) -> None:
-    ls.stop_checks()
+    # Not @server.thread(): pygls resumes its own shutdown generator on the worker
+    # thread, where the request id is not in context, and it then cancels the very
+    # request it is answering. The kill goes to a thread of this handler's own,
+    # and __main__ calls stop_checks again once start_io returns.
+    ls.begin_stop_checks()
 
 
+# Clearing cancels the document's check, and that kill waits on taskkill, which
+# must not happen on the loop that also reads stdin.
+@server.thread()
 @server.feature(types.TEXT_DOCUMENT_DID_CLOSE)
 def did_close(ls: PytaLanguageServer, params: types.DidCloseTextDocumentParams) -> None:
     ls.clear(params.text_document.uri)

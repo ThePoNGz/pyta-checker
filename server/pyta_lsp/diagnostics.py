@@ -20,10 +20,18 @@ _PYLINT_DIRS = {
     "I": "information",
 }
 _UNKNOWN_END_COLUMN = 10_000
-# Everything routed through astroid/pylint carries a UTF-8 byte offset. These two
-# do not: E9989 comes from pycodestyle and E0001 from SyntaxError.offset, both of
-# which count characters. They arrive mixed in the same message list.
-_CHARACTER_BASED_CODES = frozenset({"E9989", "E0001"})
+# Everything routed through an astroid node carries a UTF-8 byte offset. These do
+# not, and they arrive mixed into the same message list. E9989 comes from
+# pycodestyle and E0001 from SyntaxError.offset; C0303 is len() of the stripped
+# line, W0511 is a tokenize column, and W1401/W1402 index into the string body.
+# All of those count characters.
+_CHARACTER_BASED_CODES = frozenset({"E9989", "E0001", "C0303", "W0511", "W1401", "W1402"})
+# A third convention: E995x come from mypy through python_ta's static type
+# checker, which forwards mypy's columns unchanged. They are UTF-8 byte offsets
+# like the astroid ones, but the start is 1-based. The end column is 1-based
+# inclusive, which is already the 0-based exclusive offset used everywhere else,
+# so only the start is shifted back.
+_ONE_BASED_START_CODES = frozenset({"E9951", "E9952", "E9953", "E9954", "E9955", "E9956"})
 
 
 def docs_url(msg_id: str, symbol: str) -> str:
@@ -64,6 +72,8 @@ def to_diagnostic(msg: dict[str, Any], lines: Sequence[str] | None) -> types.Dia
     byte_based = msg_id.upper() not in _CHARACTER_BASED_CODES
     line0 = max(int(msg.get("line") or 1) - 1, 0)
     col = max(int(msg.get("column") or 0), 0)
+    if msg_id.upper() in _ONE_BASED_START_CODES:
+        col = max(col - 1, 0)
     start_text = _line_text(lines, line0)
     start_char = (
         _utf16_col(start_text, _source_col(start_text, col, byte_based))

@@ -1,3 +1,4 @@
+import os
 import sys
 import threading
 import time
@@ -135,7 +136,7 @@ def test_runner_env_forces_utf8_and_redirects_mypy_cache() -> None:
     env = runner_env()
     assert env["PYTHONIOENCODING"] == "utf-8"
     assert env["PYTHONUTF8"] == "1"
-    assert env["MYPY_CACHE_DIR"].endswith("pyta-checker-mypy-cache")
+    assert "pyta-checker-mypy-cache" in os.path.basename(env["MYPY_CACHE_DIR"])
 
 
 def test_guard_rejects_a_result_from_a_superseded_generation(tmp_path: Path) -> None:
@@ -200,3 +201,33 @@ def test_kill_falls_back_when_taskkill_reports_failure(monkeypatch) -> None:
     scheduler._kill(FakeProc())
 
     assert killed == ["kill"]
+
+
+def test_mypy_cache_dir_is_per_user(monkeypatch) -> None:
+    # /tmp is shared on a lab machine, so a fixed cache directory belongs to
+    # whoever created it first and mypy then fails for every other user. PythonTA
+    # ignores mypy's return code, so E9951-E9956 disappear without a word.
+    import getpass
+
+    from pyta_lsp.scheduler import runner_env
+
+    monkeypatch.setattr(getpass, "getuser", lambda: "student1")
+    first = runner_env()["MYPY_CACHE_DIR"]
+    monkeypatch.setattr(getpass, "getuser", lambda: "student2")
+    second = runner_env()["MYPY_CACHE_DIR"]
+
+    assert first != second, f"both users share {first}"
+    assert runner_env()["MYPY_CACHE_DIR"] == second, "the path must be stable so the cache still helps"
+
+
+def test_mypy_cache_dir_survives_an_unknown_user(monkeypatch) -> None:
+    import getpass
+
+    from pyta_lsp.scheduler import runner_env
+
+    def no_user() -> str:
+        raise OSError("no login name")
+
+    monkeypatch.setattr(getpass, "getuser", no_user)
+
+    assert runner_env()["MYPY_CACHE_DIR"]

@@ -379,6 +379,88 @@ def test_the_server_exits_while_checks_are_in_flight() -> None:
         proc.stdin.close()
 
 
+def _dispatch_elapsed(method: str, params) -> float:
+    """Hand one message to pygls the way the protocol does, and time the return.
+
+    This is the point where pygls decides between running a handler inline on the
+    asyncio loop and handing it to the thread pool, so it measures the thing that
+    matters rather than the decorator.
+    """
+    from pyta_lsp import server as srv
+
+    protocol = srv.server.protocol
+    handler = protocol.fm.features[method]
+    started = time.monotonic()
+    protocol._execute_handler(
+        msg_id="test", handler=handler, callback=lambda future: None, args=(params,)
+    )
+    return time.monotonic() - started
+
+
+def test_did_close_does_not_block_the_event_loop(monkeypatch) -> None:
+    # Closing a file cancels its check, and the tree-kill waits on taskkill for up
+    # to 15 seconds. Inline on the loop that also reads stdin, that is 15 seconds
+    # in which no other message is read.
+    import threading
+
+    from pyta_lsp import server as srv
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_clear(uri: str) -> None:
+        entered.set()
+        release.wait(10)
+
+    monkeypatch.setattr(srv.server, "clear", blocking_clear)
+    params = types.DidCloseTextDocumentParams(
+        text_document=types.TextDocumentIdentifier(uri="file:///tmp/a1.py")
+    )
+    try:
+        elapsed = _dispatch_elapsed(types.TEXT_DOCUMENT_DID_CLOSE, params)
+        assert entered.wait(5), "the close never ran"
+    finally:
+        release.set()
+
+    assert elapsed < 0.5, f"did_close held the loop for {elapsed:.1f}s"
+
+
+def test_shutdown_does_not_block_the_event_loop(monkeypatch) -> None:
+    # Same kill, and shutdown arrives while every check is still in flight.
+    import threading
+
+    from pyta_lsp import server as srv
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_stop() -> None:
+        entered.set()
+        release.wait(10)
+
+    monkeypatch.setattr(srv.server, "stop_checks", blocking_stop)
+    try:
+        elapsed = _dispatch_elapsed(types.SHUTDOWN, None)
+        assert entered.wait(5), "the shutdown never ran"
+    finally:
+        release.set()
+
+    assert elapsed < 0.5, f"shutdown held the loop for {elapsed:.1f}s"
+
+
+def test_the_shutdown_kill_still_finishes_before_the_process_does() -> None:
+    # A daemon thread would be abandoned at interpreter exit with the runner and
+    # its mypy still alive, which is the leak stop_checks exists to close.
+    from pyta_lsp import server as srv
+
+    ls = srv.PytaLanguageServer()
+    thread = ls.begin_stop_checks()
+    thread.join(5)
+
+    assert not thread.daemon
+    assert not thread.is_alive()
+
+
 def test_the_check_command_does_not_occupy_a_protocol_worker() -> None:
     # Same pool as the stdin reader: an explicit check that waits on its subprocess
     # there delays every later message just as an automatic one would.
@@ -405,3 +487,33 @@ def test_the_check_command_does_not_occupy_a_protocol_worker() -> None:
         release.set()
 
     assert elapsed < 0.5, f"the command blocked for {elapsed:.1f}s waiting on the check"
+
+
+def test_closing_a_file_clears_its_diagnostics_before_the_kill_waits() -> None:
+    # did_close runs off the loop now, so the same file can be reopened and checked
+    # while the close is still parked in taskkill. Publishing the empty list after
+    # that wait would wipe the fresh results.
+    import threading
+
+    from pyta_lsp import server as srv
+
+    entered = threading.Event()
+    release = threading.Event()
+    published: list[list] = []
+    ls = srv.PytaLanguageServer()
+
+    def blocking_cancel(key: str) -> None:
+        entered.set()
+        release.wait(10)
+
+    ls.scheduler.cancel = blocking_cancel  # type: ignore[method-assign]
+    ls.text_document_publish_diagnostics = lambda params: published.append(params.diagnostics)  # type: ignore[method-assign]
+    thread = threading.Thread(target=ls.clear, args=("file:///tmp/a1.py",))
+    thread.start()
+    try:
+        assert entered.wait(5), "the close never reached the kill"
+        assert published == [[]], "the diagnostics were still on screen when the kill started waiting"
+    finally:
+        release.set()
+        thread.join(5)
+        ls.stop_checks()
