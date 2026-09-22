@@ -10,6 +10,7 @@ import { StatusBar } from './statusBar';
 let client: LanguageClient | undefined;
 let log: vscode.LogOutputChannel;
 let restarting: Promise<void> | undefined;
+let restartPending = false;
 let statusBar: StatusBar;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
@@ -27,7 +28,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         void restartServer(context);
       }
       if (event.affectsConfiguration('pythonta.hideOtherPythonDiagnostics')) {
-        void applyOnlyPyta(getSettings().hideOtherPythonDiagnostics, context, log);
+        applyOnlyPyta(getSettings().hideOtherPythonDiagnostics, context, log).catch((error) => log.error(`Only-PythonTA update failed: ${String(error)}`));
       }
     }),
   );
@@ -104,6 +105,7 @@ async function stopServer(): Promise<void> {
 
 async function restartServer(context: vscode.ExtensionContext): Promise<void> {
   if (restarting) {
+    restartPending = true;
     return restarting;
   }
   restarting = (async () => {
@@ -114,6 +116,10 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
     await restarting;
   } finally {
     restarting = undefined;
+  }
+  if (restartPending) {
+    restartPending = false;
+    return restartServer(context);
   }
 }
 

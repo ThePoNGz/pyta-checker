@@ -108,7 +108,7 @@
         "pythonta.interpreter": {
           "type": "string",
           "default": "",
-          "scope": "machine-overridable",
+          "scope": "machine",
           "description": "Absolute path to a Python 3.10+ executable. Overrides the Python extension's selected interpreter. Changing this restarts the server."
         },
         "pythonta.hideOtherPythonDiagnostics": {
