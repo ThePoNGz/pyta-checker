@@ -203,7 +203,10 @@ def run_check(
     if previous_level == logging.NOTSET or previous_level > logging.INFO:
         root_logger.setLevel(logging.INFO)
     try:
-        os.chdir(base_dir)
+        # The checked file's own directory, not base_dir: mypy shortens only paths
+        # under its cwd, and python_ta's ^(?P<file>[^:]+): cannot match a Windows
+        # drive letter, so an absolute path drops every E9951-E9956 message.
+        os.chdir(file_path.parent)
         if parent_str not in sys.path:
             sys.path.append(parent_str)
             inserted_path = True

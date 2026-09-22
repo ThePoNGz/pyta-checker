@@ -362,3 +362,21 @@ def test_a_sibling_random_module_is_not_imported_by_the_mypy_subprocess(tmp_path
     assert not (tmp_path / "random.py.MARKER").exists(), "the student's module was executed"
     data = json.loads(proc.stdout)
     assert data["ok"] is True, data["error"]
+
+
+def test_mypy_messages_survive_a_staged_check(tmp_path: Path) -> None:
+    # python_ta's StaticTypeChecker matches mypy's output with ^(?P<file>[^:]+):,
+    # which a Windows drive letter cannot satisfy. mypy only shortens paths under
+    # its cwd, so checking a staged copy from the source directory dropped every
+    # E9951-E9956 message without a word.
+    work = tmp_path / "work"
+    work.mkdir()
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    target = staged / "a1.py"
+    target.write_text('"""Doc."""\nCOUNT: int = "many"\n', encoding="utf-8")
+
+    result = run_check(target, source_dir=str(work))
+
+    assert result["ok"] is True, result["error"]
+    assert "E9952" in _codes(result), _codes(result)
