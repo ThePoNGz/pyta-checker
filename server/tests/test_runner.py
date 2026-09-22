@@ -214,3 +214,17 @@ def test_missing_config_file_reports_the_underlying_error(tmp_path: Path) -> Non
     data = json.loads(proc.stdout)
     assert data["ok"] is False
     assert "no_such_config.txt" in (data["error"] or "")
+
+
+def test_non_utf8_coding_cookie_is_decoded_for_parsing(tmp_path: Path) -> None:
+    # PEP 263. python and pylint both honour this cookie, so the runner does too:
+    # the file decodes and a syntax error in it is reported as E0001 rather than as
+    # an unreadable file. PythonTA itself still cannot check such a file - upstream
+    # reads it as UTF-8 and raises - so this covers the parse step only.
+    source = '# -*- coding: cp1252 -*-\n"""Doc."""\nX = "café" ** ** 2\n'
+    (tmp_path / "a1.py").write_bytes(source.encode("cp1252"))
+
+    proc = _run_cli(tmp_path, "a1.py")
+
+    data = json.loads(proc.stdout)
+    assert [m["msg_id"] for m in data["messages"]] == ["E0001"]
