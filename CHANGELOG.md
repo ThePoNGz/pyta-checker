@@ -7,7 +7,7 @@
 - The `check_all(config=...)` block embedded in course files is honored.
 - Optional Only-PythonTA mode hides Pylance and basedpyright diagnostics.
 - Status bar item showing server and per-file state.
-- Messages PythonTA reports against a config file are no longer shown on the checked file.
+- Messages PythonTA reports against a config file are no longer squiggled as the student's; they appear as one information message on line 1 naming the config file.
 - Trailing-whitespace, `TODO` (fixme) and anomalous-backslash squiggles land on the right column on lines with non-ASCII text; mypy (E9951–E9956) squiggles no longer start one character to the right.
 - Closing a tab while its check is running no longer stalls the server.
 - `load_default_config=False` in a file's own `check_all(...)` is honoured.

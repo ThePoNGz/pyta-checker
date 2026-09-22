@@ -69,6 +69,7 @@ def _empty_result() -> dict[str, Any]:
         "messages": [],
         "log": "",
         "warnings": [],
+        "elsewhere": [],
         "error": None,
         "traceback": None,
         "pyta_version": None,
@@ -106,7 +107,7 @@ def _owns(filename: str, target: Path) -> bool:
         return False
 
 
-def _split_messages(report_data: list[Any], target: Path) -> tuple[list[Any], list[str]]:
+def _split_messages(report_data: list[Any], target: Path) -> tuple[list[Any], list[Any]]:
     """Separate the checked file's messages from every other file's.
 
     The reporter keeps an entry per file it read and drops only the non-.py ones
@@ -114,7 +115,7 @@ def _split_messages(report_data: list[Any], target: Path) -> tuple[list[Any], li
     carrying that file's line numbers.
     """
     messages: list[Any] = []
-    warnings: list[str] = []
+    elsewhere: list[Any] = []
     for entry in report_data:
         msgs = entry.get("msgs", [])
         if not msgs:
@@ -123,10 +124,8 @@ def _split_messages(report_data: list[Any], target: Path) -> tuple[list[Any], li
         if not filename or _owns(filename, target):
             messages.extend(msgs)
             continue
-        warnings.extend(
-            f"{filename}: {m.get('msg_id', '')} {m.get('msg', '')}".strip() for m in msgs
-        )
-    return messages, warnings
+        elsewhere.extend({**m, "filename": filename} for m in msgs)
+    return messages, elsewhere
 
 
 def _resolve_config(
@@ -249,9 +248,7 @@ def run_check(
     except json.JSONDecodeError:
         result.update(ok=False, error="PythonTA produced output that is not JSON", traceback=raw[-2000:])
         return result
-    messages, elsewhere = _split_messages(report_data, file_path)
-    result["messages"] = messages
-    result["warnings"].extend(elsewhere)
+    result["messages"], result["elsewhere"] = _split_messages(report_data, file_path)
     return result
 
 

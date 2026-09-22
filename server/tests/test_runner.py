@@ -301,7 +301,9 @@ def test_a_message_about_the_config_file_is_not_pinned_on_the_checked_file(tmp_p
     assert result["ok"] is True, result["error"]
     strays = [m for m in result["messages"] if "cfg.txt" in str(m.get("path"))]
     assert strays == [], f"messages from another file were attributed here: {strays}"
-    assert any("W0012" in w for w in result["warnings"]), result["warnings"]
+    elsewhere = result["elsewhere"]
+    assert [m["msg_id"] for m in elsewhere] == ["W0012"], elsewhere
+    assert elsewhere[0]["filename"].endswith("cfg.txt")
 
 
 def test_source_dir_resolves_an_embedded_relative_config(tmp_path: Path) -> None:

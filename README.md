@@ -19,7 +19,7 @@ Built for University of Toronto courses (CSC108, CSC110/111, CSC148) that grade 
 
 The extension only activates in a trusted workspace (VS Code asks you to trust a folder the first time you open it).
 
-If nothing appears, open **View > Output** and pick **PythonTA** from the dropdown. The log says which Python was found and what the server did.
+If nothing appears, open **View > Output** and pick **PythonTA** from the dropdown. The log says which Python was found and what the server did. If the file's config (embedded or `pythonta.configPath`) has a problem PythonTA complains about, that shows as an information message on line 1 naming the config file, so a broken config never fails silently.
 
 ## Commands
 

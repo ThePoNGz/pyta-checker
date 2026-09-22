@@ -1,6 +1,6 @@
 from lsprotocol import types
 
-from pyta_lsp.diagnostics import FAILURE_CODE, SOURCE, docs_url, failure_diagnostic, to_diagnostic
+from pyta_lsp.diagnostics import FAILURE_CODE, SOURCE, config_diagnostic, docs_url, failure_diagnostic, to_diagnostic
 
 
 def _msg(**overrides):
@@ -195,3 +195,24 @@ def test_a_mypy_end_column_is_not_shifted_with_its_start(tmp_path) -> None:
     msg = next(m for m in result["messages"] if m["msg_id"] == "E9952")
     end = to_diagnostic(msg, lines).range.end
     assert end == types.Position(5, lines[5].index('"many"') + len('"many"'))
+
+
+def test_a_config_file_message_is_an_information_diagnostic_on_line_one() -> None:
+    # The student's own run prints this under the config file; here it has to
+    # sit on the file being checked, marked as being about the config.
+    diagnostic = config_diagnostic(
+        {
+            "filename": "C:/course/cfg.txt",
+            "msg_id": "W0012",
+            "symbol": "unknown-option-value",
+            "msg": "Unknown option value for '--disable', expected a valid pylint message",
+            "line": 2,
+        }
+    )
+    assert diagnostic.severity == types.DiagnosticSeverity.Information
+    assert diagnostic.code == "W0012"
+    assert diagnostic.source == SOURCE
+    assert diagnostic.range.start == types.Position(0, 0)
+    assert "cfg.txt" in diagnostic.message
+    assert "line 2" in diagnostic.message
+    assert "Unknown option value" in diagnostic.message

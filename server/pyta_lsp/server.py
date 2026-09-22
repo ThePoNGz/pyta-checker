@@ -17,7 +17,7 @@ from pygls import uris
 from pygls.lsp.server import LanguageServer
 
 from . import __version__
-from .diagnostics import failure_diagnostic, to_diagnostic
+from .diagnostics import config_diagnostic, failure_diagnostic, to_diagnostic
 from .scheduler import GENERATION_KEY, CheckScheduler
 
 log = logging.getLogger("pyta_lsp")
@@ -186,6 +186,8 @@ class PytaLanguageServer(LanguageServer):
         generation = result.pop(GENERATION_KEY)
         if result.get("ok"):
             diagnostics = [to_diagnostic(m, lines) for m in result.get("messages", [])]
+            # The config file's own messages: not the student's to fix, but not silent either.
+            diagnostics.extend(config_diagnostic(m) for m in result.get("elsewhere", []))
             for warning in result.get("warnings", []):
                 self.log_to_client(f"{path}: {warning}", types.MessageType.Warning)
         else:
