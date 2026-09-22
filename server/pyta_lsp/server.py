@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -70,6 +71,30 @@ def is_package_module(path: str) -> bool:
     resolve to nothing and PythonTA reports an import error that is not real.
     """
     return os.path.isfile(os.path.join(os.path.dirname(path), "__init__.py"))
+
+
+_COOKIE_RE = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*(?P<name>[-_.a-zA-Z0-9]+)")
+
+
+def normalise_coding_cookie(source: str) -> str:
+    """Point a PEP 263 cookie at utf-8, because the staged copy is written as utf-8.
+
+    Left alone, the tokenizer decodes those utf-8 bytes as the declared encoding,
+    so every non-ASCII character counts twice and columns, line lengths and the
+    messages that follow from them are all wrong. Only the encoding name changes,
+    so the line count does not move.
+    """
+    lines = source.split("\n")
+    for index in range(min(2, len(lines))):
+        match = _COOKIE_RE.match(lines[index])
+        if match:
+            if match.group("name").lower().replace("_", "-") not in ("utf-8", "utf8"):
+                start, end = match.span("name")
+                lines[index] = lines[index][:start] + "utf-8" + lines[index][end:]
+            return "\n".join(lines)
+        if lines[index].strip() and not lines[index].lstrip().startswith("#"):
+            break
+    return source
 
 
 # The order python_ta.config.find_local_config tries, and the only names it knows.
@@ -188,7 +213,7 @@ class PytaLanguageServer(LanguageServer):
                 # can differ from disk, so check a UTF-8 copy of what the user sees.
                 target = os.path.join(staging, os.path.basename(path))
                 with open(target, "w", encoding="utf-8", newline="") as handle:
-                    handle.write(source)
+                    handle.write(normalise_coding_cookie(source))
                 # PythonTA loads config/.pylintrc from beside the file it is given,
                 # so without this the copy is checked against a different config
                 # than the student's own run uses.

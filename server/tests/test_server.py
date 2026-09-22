@@ -660,3 +660,50 @@ def test_the_local_config_lookup_matches_python_ta_s_own(tmp_path) -> None:
         theirs = pyta_find(str(tmp_path))
         assert ours is not None and theirs is not None
         assert os.path.normcase(ours) == os.path.normcase(theirs), name
+
+
+_COOKIE_LINE = 'NOM = "caféééééé ' + "x" * 61 + '"'
+
+
+async def test_a_non_utf8_cookie_does_not_survive_into_the_utf8_staged_copy(
+    client: LanguageClient, tmp_path
+) -> None:
+    # The copy is written as UTF-8. A cp1252 cookie riding along makes the
+    # tokenizer decode those bytes as cp1252, so every non-ASCII character counts
+    # twice: a 79-character line becomes 85 and C0301 appears on a line the
+    # student's own run never complains about.
+    body = '"""Doc."""\n' + _COOKIE_LINE + "\nprint(NOM)\n"
+    results = {}
+    for name, cookie in (("cp1252.py", "cp1252"), ("utf8.py", "utf-8")):
+        source = f"# -*- coding: {cookie} -*-\n" + body
+        path = tmp_path / name
+        path.write_text(source, encoding="utf-8")
+        uri = path.as_uri()
+        client.text_document_did_open(
+            types.DidOpenTextDocumentParams(
+                text_document=types.TextDocumentItem(
+                    uri=uri, language_id="python", version=1, text=source
+                )
+            )
+        )
+        await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+        results[name] = sorted(str(d.code) for d in client.diagnostics[uri])
+
+    assert results["cp1252.py"] == results["utf8.py"], results
+
+
+def test_a_coding_cookie_is_pointed_at_utf8_without_moving_any_line() -> None:
+    from pyta_lsp.server import normalise_coding_cookie
+
+    assert normalise_coding_cookie("# -*- coding: cp1252 -*-\nX = 1\n") == (
+        "# -*- coding: utf-8 -*-\nX = 1\n"
+    )
+    assert normalise_coding_cookie("#!/usr/bin/env python\n# coding: latin-1\nX = 1\n") == (
+        "#!/usr/bin/env python\n# coding: utf-8\nX = 1\n"
+    )
+    assert normalise_coding_cookie("# -*- coding: utf-8 -*-\nX = 1\n") == (
+        "# -*- coding: utf-8 -*-\nX = 1\n"
+    )
+    # A cookie is only a cookie in the first two lines, and only before real code.
+    assert normalise_coding_cookie("X = 1\n# coding: cp1252\n") == "X = 1\n# coding: cp1252\n"
+    assert normalise_coding_cookie("# -*- coding: cp1252 -*-\r\nX = 1\r\n").count("\r\n") == 2
