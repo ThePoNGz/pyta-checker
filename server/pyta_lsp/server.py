@@ -1,6 +1,7 @@
 """pygls language server that runs PythonTA through the runner subprocess."""
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -278,13 +279,18 @@ class PytaLanguageServer(LanguageServer):
                 # than the student's own run uses.
                 local_config = find_local_config(source_dir)
                 if local_config:
+                    staged_config = os.path.join(
+                        staged_dir, "config", os.path.basename(local_config)
+                    )
                     try:
                         os.mkdir(os.path.join(staged_dir, "config"))
-                        shutil.copyfile(
-                            local_config,
-                            os.path.join(staged_dir, "config", os.path.basename(local_config)),
-                        )
+                        shutil.copyfile(local_config, staged_config)
                     except OSError as exc:
+                        # copyfile writes before it fails, and find_local_config
+                        # would then hand python_ta a truncated config, which is a
+                        # worse answer than the defaults.
+                        with contextlib.suppress(OSError):
+                            os.remove(staged_config)
                         # Checking against the wrong config is wrong; not checking
                         # at all is worse, and that is what raising here meant.
                         self.log_to_client(

@@ -866,6 +866,49 @@ def test_a_failure_from_a_superseded_check_does_not_overwrite_newer_results(tmp_
     assert statuses == ["checking"], statuses
 
 
+def test_a_config_copy_that_dies_midway_stages_nothing(tmp_path, monkeypatch) -> None:
+    # copyfile writes into the destination before it fails, so a full disk or a
+    # read that dies partway left a truncated config/.pylintrc in staging, and
+    # find_local_config serves that to python_ta: a half-read config is a worse
+    # answer than no config at all.
+    import os
+    import shutil
+
+    from pyta_lsp import server as srv
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / ".pylintrc").write_text(
+        "[FORBIDDEN IMPORT]\nextra-imports = random\n", encoding="utf-8"
+    )
+    path = tmp_path / "a1.py"
+    path.write_text('"""Doc."""\nX = 1\n', encoding="utf-8")
+
+    def half_a_copy(src, dst, *args, **kwargs):
+        with open(dst, "w", encoding="utf-8") as handle:
+            handle.write("[FORBIDDEN IM")
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(shutil, "copyfile", half_a_copy)
+    ls = _bare_server(tmp_path)
+    messages: list = []
+    ls.log_to_client = lambda message, *args, **kwargs: messages.append(message)  # type: ignore[method-assign]
+    staged: list = []
+
+    def capture(key, argv, cwd, generation=None):
+        config_dir = os.path.join(os.path.dirname(argv[3]), "config")
+        staged.append(sorted(os.listdir(config_dir)) if os.path.isdir(config_dir) else [])
+        return None
+
+    ls.scheduler.run = capture  # type: ignore[method-assign]
+    try:
+        ls.check(path.as_uri())
+    finally:
+        ls.stop_checks()
+
+    assert staged == [[]], f"a truncated config was left for python_ta to read: {staged}"
+    assert any(".pylintrc" in message for message in messages), messages
+
+
 class _LockThatHooksItsRelease:
     """Runs a hook the first time the scheduler's lock is let go."""
 
