@@ -11,17 +11,22 @@ interface StubState {
   values: Record<string, unknown>;
   /** Keys whose update() throws, mapped to the message VS Code would raise. */
   rejects: Record<string, string>;
+  /** Values set at workspace scope, which outrank anything written globally. */
+  scoped: Record<string, unknown>;
   commands: string[];
   ran: string[];
+  warned: string[];
 }
 
-export const state: StubState = { values: {}, rejects: {}, commands: [], ran: [] };
+export const state: StubState = { values: {}, rejects: {}, scoped: {}, commands: [], ran: [], warned: [] };
 
 export function resetStub(): void {
   state.values = {};
   state.rejects = {};
+  state.scoped = {};
   state.commands = [];
   state.ran = [];
+  state.warned = [];
 }
 
 function id(section: string, key: string): string {
@@ -38,8 +43,12 @@ export const workspace = {
         const value = state.values[id(section, key)];
         return value === undefined ? fallback : (value as T);
       },
-      inspect<T>(key: string): { globalValue: T | undefined } {
-        return { globalValue: state.values[id(section, key)] as T | undefined };
+      inspect<T>(key: string): { globalValue: T | undefined; workspaceValue: T | undefined; workspaceFolderValue: T | undefined } {
+        return {
+          globalValue: state.values[id(section, key)] as T | undefined,
+          workspaceValue: state.scoped[id(section, key)] as T | undefined,
+          workspaceFolderValue: undefined,
+        };
       },
       async update(key: string, value: unknown): Promise<void> {
         const target = id(section, key);
@@ -88,7 +97,8 @@ export const window = {
   async showErrorMessage(): Promise<undefined> {
     return undefined;
   },
-  async showWarningMessage(): Promise<undefined> {
+  async showWarningMessage(message: string): Promise<undefined> {
+    state.warned.push(message);
     return undefined;
   },
   createOutputChannel() {

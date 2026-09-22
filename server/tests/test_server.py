@@ -238,3 +238,32 @@ async def test_non_utf8_file_is_checked_through_the_staged_copy(
     codes = {d.code for d in client.diagnostics[uri]}
     assert FAILURE_CODE not in codes, "PythonTA still could not read the file"
     assert "E9999" in codes
+
+
+async def test_a_package_module_is_not_given_false_import_errors(
+    client: LanguageClient, tmp_path
+) -> None:
+    # A copy of a package module in a temp directory is not part of that package, so
+    # its relative imports resolve to nothing and PythonTA invents an import error
+    # the student cannot act on.
+    package = tmp_path / "mypkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "helper.py").write_text(
+        '"""Helper."""\n\n\ndef hi() -> int:\n    """Doc."""\n    return 1\n', encoding="utf-8"
+    )
+    source = '"""Doc."""\nfrom . import helper\n\nX = helper.hi()\n'
+    module = package / "mod.py"
+    module.write_text(source, encoding="utf-8")
+    uri = module.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri, language_id="python", version=1, text=source
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    assert "E0611" not in {d.code for d in client.diagnostics[uri]}
