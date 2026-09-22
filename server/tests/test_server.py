@@ -866,6 +866,64 @@ def test_a_failure_from_a_superseded_check_does_not_overwrite_newer_results(tmp_
     assert statuses == ["checking"], statuses
 
 
+class _LockThatHooksItsRelease:
+    """Runs a hook the first time the scheduler's lock is let go."""
+
+    def __init__(self, lock, hook) -> None:
+        self._lock = lock
+        self._hook = hook
+        self._fired = False
+
+    def __enter__(self):
+        return self._lock.__enter__()
+
+    def __exit__(self, *exc):
+        result = self._lock.__exit__(*exc)
+        if not self._fired:
+            self._fired = True
+            self._hook()
+        return result
+
+    def acquire(self, *args, **kwargs):
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self):
+        self._lock.release()
+
+
+def test_a_failure_is_not_published_onto_a_document_that_was_just_closed(tmp_path) -> None:
+    # fail() decided under the lock and published after it. A did_close in that
+    # gap cleared the document and cancelled its check, and the failure landed
+    # afterwards: a squiggle on a file that is no longer open, with nothing left
+    # to clear it.
+    import threading
+
+    path = tmp_path / "a1.py"
+    uri = path.as_uri()
+    ls = _bare_server(tmp_path)
+    published: list = []
+    ls.text_document_publish_diagnostics = lambda params: published.append(params.diagnostics)  # type: ignore[method-assign]
+    generation = ls.scheduler.reserve(uri)
+
+    def close_the_document() -> None:
+        thread = threading.Thread(target=ls.clear, args=(uri,), name="closer")
+        thread.start()
+        thread.join(1)
+        closers.append(thread)
+
+    closers: list = []
+    ls.scheduler._lock = _LockThatHooksItsRelease(ls.scheduler._lock, close_the_document)
+    try:
+        ls.fail(uri, generation, "no space left on device")
+        for thread in closers:
+            thread.join(5)
+    finally:
+        ls.stop_checks()
+
+    assert published, "nothing was published at all"
+    assert published[-1] == [], f"the failure was published after the close: {published}"
+
+
 async def test_a_course_config_that_cannot_be_staged_does_not_lose_the_check(
     client: LanguageClient, tmp_path
 ) -> None:

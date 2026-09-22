@@ -162,12 +162,18 @@ class CheckScheduler:
             _kill(previous)
         return generation
 
-    def fail(self, key: str, generation: int) -> bool:
-        """Complete `generation` without a result, if it is still the newest."""
+    def fail(self, key: str, generation: int, action: Callable[[], None]) -> bool:
+        """Complete `generation` without a result and run action, if it is still the newest.
+
+        The action runs under the lock, as guard() does: deciding inside it and
+        publishing outside let a did_close land in between, so the failure was
+        published onto a document whose diagnostics had just been cleared.
+        """
         with self._lock:
             if self._generation.get(key) != generation:
                 return False
             self._completed[key] = generation
+            action()
             return True
 
     def run(

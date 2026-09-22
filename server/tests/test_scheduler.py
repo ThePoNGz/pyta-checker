@@ -484,6 +484,39 @@ def test_fail_completes_only_the_newest_generation() -> None:
     scheduler = CheckScheduler(timeout=30)
     first = scheduler.reserve("doc")
     second = scheduler.reserve("doc")
+    ran: list[int] = []
 
-    assert scheduler.fail("doc", first) is False, "a superseded check reported its own failure"
-    assert scheduler.fail("doc", second) is True
+    assert scheduler.fail("doc", first, lambda: ran.append(first)) is False, (
+        "a superseded check reported its own failure"
+    )
+    assert scheduler.fail("doc", second, lambda: ran.append(second)) is True
+    assert ran == [second], "the action of a superseded failure still ran"
+
+
+def test_fail_runs_its_action_before_another_thread_can_cancel(tmp_path: Path) -> None:
+    # fail() decided under the lock and published after it, so a did_close landing
+    # in that gap cleared the document and the failure was published onto a closed
+    # file. The action belongs inside the same critical section as the decision.
+    scheduler = CheckScheduler(timeout=30)
+    generation = scheduler.reserve("doc")
+    order: list[str] = []
+    cancelled = threading.Event()
+
+    def cancel() -> None:
+        scheduler.cancel("doc")
+        order.append("cancel")
+        cancelled.set()
+
+    def action() -> None:
+        thread = threading.Thread(target=cancel, name="closer")
+        thread.start()
+        cancelled.wait(1)
+        order.append("fail")
+        threads.append(thread)
+
+    threads: list[threading.Thread] = []
+    assert scheduler.fail("doc", generation, action) is True
+    for thread in threads:
+        thread.join(5)
+
+    assert order == ["fail", "cancel"], f"the cancel ran inside the failure's own decision: {order}"

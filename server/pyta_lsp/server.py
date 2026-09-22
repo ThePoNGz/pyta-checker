@@ -224,14 +224,18 @@ class PytaLanguageServer(LanguageServer):
 
         Publishing unguarded let an early failure -- mkdtemp, the staged write --
         wipe the diagnostics of a check already running on the same document and
-        flip its status bar to done while it was still going.
+        flip its status bar to done while it was still going. The publish goes
+        inside the guard's own lock, or a did_close between the decision and the
+        publish leaves the failure on a document that is no longer open.
         """
-        if not self.scheduler.fail(uri, generation):
-            return
-        self.text_document_publish_diagnostics(
-            types.PublishDiagnosticsParams(uri=uri, diagnostics=[failure_diagnostic(reason)])
-        )
-        self.notify_status(uri, "done", 1)
+
+        def publish() -> None:
+            self.text_document_publish_diagnostics(
+                types.PublishDiagnosticsParams(uri=uri, diagnostics=[failure_diagnostic(reason)])
+            )
+            self.notify_status(uri, "done", 1)
+
+        self.scheduler.fail(uri, generation, publish)
 
     def _check(self, uri: str, path: str, doc: Any, generation: int) -> None:
         source_dir = os.path.dirname(path)
