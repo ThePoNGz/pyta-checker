@@ -57,7 +57,10 @@ def _venv_python(root: Path) -> Path:
 
 
 def _version_key(version: str) -> Any:
-    from packaging.version import Version
+    try:
+        from packaging.version import Version
+    except ImportError:  # a bare interpreter still has pip's vendored copy
+        from pip._vendor.packaging.version import Version
 
     return Version(version)
 
