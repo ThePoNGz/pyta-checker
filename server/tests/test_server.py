@@ -808,3 +808,19 @@ async def test_a_form_feed_does_not_shift_every_later_column(
     assert pep8, [d.code for d in client.diagnostics[uri]]
     assert pep8[0].range.start.line == 4
     assert pep8[0].range.start.character == len("OTHER = NAME")
+
+
+async def test_a_config_the_extension_could_not_read_is_visible_in_the_editor(
+    client: LanguageClient,
+) -> None:
+    # A module-level config variable means the file is checked against stock
+    # defaults. In the Output log alone that is invisible, and the student sees
+    # messages their own run does not produce with nothing to explain it.
+    uri = _open(client, "nonliteral_config.py")
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    about = [d for d in client.diagnostics[uri] if str(d.message).startswith("PythonTA config:")]
+    assert len(about) == 1, [d.message for d in client.diagnostics[uri]]
+    assert about[0].severity == types.DiagnosticSeverity.Information
+    assert about[0].range.start.line == 0
+    assert "not a literal" in about[0].message

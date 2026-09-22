@@ -11,6 +11,7 @@ from .pyta_codes import PYTA_DOCUMENTED_CODES
 
 SOURCE = "PythonTA"
 FAILURE_CODE = "pyta-error"
+CONFIG_WARNING_CODE = "pyta-config"
 PYTA_DOCS = "https://www.cs.toronto.edu/~david/pyta/checkers/index.html"
 PYLINT_DOCS = "https://pylint.readthedocs.io/en/stable/user_guide/messages"
 _PYLINT_DIRS = {
@@ -165,6 +166,22 @@ def config_diagnostic(msg: dict[str, Any]) -> types.Diagnostic:
         severity=types.DiagnosticSeverity.Information,
         code=msg_id,
         code_description=types.CodeDescription(href=docs_url(msg_id, symbol)),
+        source=SOURCE,
+    )
+
+
+def config_warning_diagnostic(message: str) -> types.Diagnostic:
+    """A warning from reading the student's own check_all call.
+
+    Every warning the runner returns comes from that reading, and each one means
+    the file was checked against something other than the config the call asks
+    for. In the Output log alone that is invisible.
+    """
+    return types.Diagnostic(
+        range=types.Range(start=types.Position(0, 0), end=types.Position(0, _UNKNOWN_END_COLUMN)),
+        message=f"PythonTA config: {message}",
+        severity=types.DiagnosticSeverity.Information,
+        code=CONFIG_WARNING_CODE,
         source=SOURCE,
     )
 

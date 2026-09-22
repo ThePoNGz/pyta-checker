@@ -18,7 +18,13 @@ from pygls import uris
 from pygls.lsp.server import LanguageServer
 
 from . import __version__
-from .diagnostics import config_diagnostic, failure_diagnostic, split_lines, to_diagnostic
+from .diagnostics import (
+    config_diagnostic,
+    config_warning_diagnostic,
+    failure_diagnostic,
+    split_lines,
+    to_diagnostic,
+)
 from .scheduler import GENERATION_KEY, CheckScheduler
 
 log = logging.getLogger("pyta_lsp")
@@ -270,8 +276,12 @@ class PytaLanguageServer(LanguageServer):
             diagnostics = [to_diagnostic(m, lines) for m in result.get("messages", [])]
             # The config file's own messages: not the student's to fix, but not silent either.
             diagnostics.extend(config_diagnostic(m) for m in result.get("elsewhere", []))
+            # Every warning the runner returns comes from reading the student's
+            # own check_all call, and each one means this check used a different
+            # config than that call asks for.
             for warning in result.get("warnings", []):
                 self.log_to_client(f"{path}: {warning}", types.MessageType.Warning)
+                diagnostics.append(config_warning_diagnostic(warning))
         else:
             reason = str(result.get("error") or "unknown error")
             diagnostics = [failure_diagnostic(reason)]
