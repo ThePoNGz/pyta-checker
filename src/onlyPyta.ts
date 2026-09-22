@@ -54,10 +54,12 @@ async function applyOnlyPytaNow(
       await vscode.workspace.getConfiguration(write.section).update(write.key, write.value, vscode.ConfigurationTarget.Global);
       log.info(`${enabled ? 'Set' : 'Restored'} ${write.section}.${write.key}`);
     } catch (error) {
+      // A refused write leaves the old value in place whatever the reason, so the
+      // reason only picks the log line.
+      restoreFailed = true;
       if (isUnregisteredSettingError(error)) {
         log.info(`Skipping ${write.section}.${write.key} (extension not installed)`);
       } else {
-        restoreFailed = true;
         log.warn(`Could not write ${write.section}.${write.key}: ${String(error)}`);
       }
     }
