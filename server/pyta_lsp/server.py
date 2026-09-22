@@ -88,17 +88,25 @@ def normalise_coding_cookie(source: str) -> str:
     Left alone, the tokenizer decodes those utf-8 bytes as the declared encoding,
     so every non-ASCII character counts twice and columns, line lengths and the
     messages that follow from them are all wrong. Only the encoding name changes,
-    so the line count does not move.
+    so no line moves and no separator changes.
+
+    The split has to be the tokenizer's: on "\\n" alone a CR-only buffer is one
+    line, and the pattern then finds a "coding=" anywhere in the file. A buffer
+    behind a BOM is left as it is; a non-utf-8 cookie there is a SyntaxError
+    before this runs, as it was before.
     """
-    lines = source.split("\n")
+    lines = split_lines(source)
     for index in range(min(2, len(lines))):
-        match = _COOKIE_RE.match(lines[index])
+        line = lines[index]
+        content = line.rstrip("\r\n")
+        ending = line[len(content):]
+        match = _COOKIE_RE.match(content)
         if match:
             if match.group("name").lower().replace("_", "-") not in ("utf-8", "utf8"):
                 start, end = match.span("name")
-                lines[index] = lines[index][:start] + "utf-8" + lines[index][end:]
-            return "\n".join(lines)
-        if lines[index].strip() and not lines[index].lstrip().startswith("#"):
+                lines[index] = content[:start] + "utf-8" + content[end:] + ending
+            return "".join(lines)
+        if content.strip() and not content.lstrip().startswith("#"):
             break
     return source
 

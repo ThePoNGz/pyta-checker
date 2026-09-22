@@ -886,3 +886,31 @@ async def test_a_course_config_that_cannot_be_staged_does_not_lose_the_check(
     assert any(".pylintrc" in message.message for message in client.log_messages), (
         [m.message for m in client.log_messages]
     )
+
+
+def test_a_cookie_is_only_looked_for_in_the_first_two_real_lines() -> None:
+    # Splitting on "\n" makes a CR-only buffer one line, so the cookie pattern
+    # scans the whole file and rewrites the first "coding=" it finds anywhere.
+    # A student's own encoding=enc then became encoding=utf-8 and the check
+    # reported an E0602 their own run never does.
+    from pyta_lsp.server import normalise_coding_cookie
+
+    unchanged = "# note\rX = 1\rencoding=enc\rprint(encoding)\r"
+    assert normalise_coding_cookie(unchanged) == unchanged
+
+    # A real cookie in a CR-only buffer is still rewritten, separators and all.
+    assert normalise_coding_cookie("# -*- coding: cp1252 -*-\rX = 1\r") == (
+        "# -*- coding: utf-8 -*-\rX = 1\r"
+    )
+    assert normalise_coding_cookie("#!/usr/bin/env python\r\n# coding: latin-1\r\nX = 1\r\n") == (
+        "#!/usr/bin/env python\r\n# coding: utf-8\r\nX = 1\r\n"
+    )
+
+
+def test_a_buffer_behind_a_bom_is_left_alone() -> None:
+    # The BOM outranks the cookie, and a non-utf-8 cookie behind one is a
+    # SyntaxError before this ever runs. Rewriting it would only move the line.
+    from pyta_lsp.server import normalise_coding_cookie
+
+    source = "﻿# -*- coding: cp1252 -*-\nX = 1\n"
+    assert normalise_coding_cookie(source) == source
