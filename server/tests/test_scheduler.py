@@ -89,3 +89,24 @@ def test_cancel_kills_in_flight(tmp_path: Path) -> None:
     thread.join(timeout=10)
     assert not thread.is_alive()
     assert results["r"] is None
+
+
+def test_guard_runs_action_after_current_run(tmp_path: Path) -> None:
+    scheduler = CheckScheduler(timeout=30)
+    scheduler.run("doc", _echo_argv("one"), str(tmp_path))
+    calls: list[str] = []
+    assert scheduler.guard("doc", lambda: calls.append("published")) is True
+    assert calls == ["published"]
+
+
+def test_guard_skips_action_after_cancel(tmp_path: Path) -> None:
+    scheduler = CheckScheduler(timeout=30)
+    scheduler.run("doc", _echo_argv("one"), str(tmp_path))
+    scheduler.cancel("doc")
+    calls: list[str] = []
+    assert scheduler.guard("doc", lambda: calls.append("published")) is False
+    assert calls == []
+
+
+def test_guard_skips_action_for_unknown_key() -> None:
+    assert CheckScheduler(timeout=30).guard("never-run", lambda: None) is False

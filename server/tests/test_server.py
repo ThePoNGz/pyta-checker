@@ -1,4 +1,3 @@
-import asyncio
 import sys
 from collections.abc import AsyncGenerator
 
@@ -34,13 +33,6 @@ def _open(client: LanguageClient, name: str) -> str:
         )
     )
     return uri
-
-
-def _expect_diagnostics(client: LanguageClient) -> "asyncio.Future[object]":
-    """Register the notification future before the triggering request is sent."""
-    return asyncio.wrap_future(
-        client.protocol.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
-    )
 
 
 async def test_open_publishes_diagnostics_honoring_embedded_config(client: LanguageClient) -> None:
@@ -79,7 +71,8 @@ async def test_syntax_error_is_reported(client: LanguageClient) -> None:
 
 async def test_execute_command_checks_a_document(client: LanguageClient) -> None:
     uri = (FIXTURES / "no_config.py").as_uri()
-    published = _expect_diagnostics(client)
+    # Registers the notification future now, before the request that triggers the publish is sent.
+    published = client.protocol.wait_for_notification_async(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
     await client.workspace_execute_command_async(
         types.ExecuteCommandParams(command="pyta.check", arguments=[uri])
     )

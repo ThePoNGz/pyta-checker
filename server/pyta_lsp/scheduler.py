@@ -68,6 +68,7 @@ class CheckScheduler:
         self._timeout = timeout
         self._lock = threading.Lock()
         self._generation: dict[str, int] = {}
+        self._completed: dict[str, int] = {}
         self._procs: dict[str, subprocess.Popen] = {}
 
     def run(self, key: str, argv: list[str], cwd: str) -> dict[str, Any] | None:
@@ -85,6 +86,7 @@ class CheckScheduler:
                 self._procs[key] = proc
         if superseded:
             _kill(proc)
+            proc.communicate()
             return None
 
         timed_out = False
@@ -92,7 +94,10 @@ class CheckScheduler:
             out, err = proc.communicate(timeout=self._timeout)
         except subprocess.TimeoutExpired:
             _kill(proc)
-            out, err = proc.communicate()
+            try:
+                out, err = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                out, err = b"", b""
             timed_out = True
 
         with self._lock:
@@ -100,7 +105,17 @@ class CheckScheduler:
                 del self._procs[key]
             if self._generation[key] != generation:
                 return None
+            self._completed[key] = generation
         return _interpret(out, err, proc.returncode, timed_out, self._timeout)
+
+    def guard(self, key: str, action: Callable[[], None]) -> bool:
+        """Run action under the lock only if no newer request or cancel happened since the last completed run for key."""
+        with self._lock:
+            completed = self._completed.get(key)
+            if completed is None or self._generation.get(key) != completed:
+                return False
+            action()
+            return True
 
     def cancel(self, key: str) -> None:
         with self._lock:

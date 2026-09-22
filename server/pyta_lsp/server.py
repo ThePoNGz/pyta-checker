@@ -77,10 +77,13 @@ class PytaLanguageServer(LanguageServer):
             diagnostics = [failure_diagnostic(reason)]
             detail = "\n".join(s for s in (result.get("traceback"), result.get("log")) if s)
             self.log_to_client(f"PythonTA failed on {path}: {reason}\n{detail}", types.MessageType.Error)
-        self.text_document_publish_diagnostics(
-            types.PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics)
-        )
-        self.notify_status(uri, "done", len(diagnostics))
+        def publish() -> None:
+            self.text_document_publish_diagnostics(
+                types.PublishDiagnosticsParams(uri=uri, diagnostics=diagnostics)
+            )
+            self.notify_status(uri, "done", len(diagnostics))
+
+        self.scheduler.guard(uri, publish)
 
     def clear(self, uri: str) -> None:
         self.scheduler.cancel(uri)
@@ -136,7 +139,7 @@ def did_change_configuration(ls: PytaLanguageServer, params: types.DidChangeConf
         if items and isinstance(items[0], dict):
             settings = items[0]
     except Exception as exc:  # clients without workspace/configuration support
-        log.debug("workspace/configuration unavailable: %s", exc)
+        log.warning("workspace/configuration unavailable: %s", exc)
     if settings is None and isinstance(params.settings, dict):
         settings = params.settings
     if settings is not None:
