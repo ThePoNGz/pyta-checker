@@ -1,0 +1,57 @@
+{
+  "customContext": {
+    "rules": [
+      {
+        "rule": "Diagnostics must match what the course's own PythonTA run would report. Anything that changes which config is loaded, which messages are emitted, or where they are placed is a correctness bug rather than a preference, because the student is graded on the other tool's output.",
+        "scope": ["server/**"]
+      },
+      {
+        "rule": "Only python_ta's own check_all/check_errors calls may supply the embedded config. A call counts only when it resolves to python_ta through an import in the file; a student helper of the same name must be ignored.",
+        "scope": ["server/pyta_lsp/config_extract.py"]
+      },
+      {
+        "rule": "Three column conventions are in play: astroid and pylint report col_offset as a UTF-8 byte offset, E9989 (pycodestyle) and E0001 (SyntaxError.offset) report character offsets, and LSP requires UTF-16 code units. Any new column handling must make clear which of the three it is in.",
+        "scope": ["server/pyta_lsp/diagnostics.py"]
+      },
+      {
+        "rule": "Student files are untrusted input. The directory holding the checked file must never outrank the bundled libraries or the standard library on sys.path, or a module sitting beside it can impersonate python_ta and execute on import.",
+        "scope": ["server/pyta_lsp/runner.py"]
+      },
+      {
+        "rule": "The file handed to PythonTA is not always the file on disk: the server stages the editor buffer as a UTF-8 copy so dirty buffers and non-UTF-8 files can be checked. A module beside an __init__.py must be checked in place instead, because a copy sits outside its package and its relative imports resolve to nothing.",
+        "scope": ["server/pyta_lsp/server.py", "server/pyta_lsp/runner.py"]
+      },
+      {
+        "rule": "Every check is a subprocess that itself spawns mypy with no timeout of its own. Anything that terminates a check must kill the whole process tree, and must not treat a failed kill as a successful one.",
+        "scope": ["server/pyta_lsp/scheduler.py"]
+      },
+      {
+        "rule": "Handlers must not block a pygls worker on a subprocess. That pool also serves the stdin reader, so work that waits belongs on the server's own executor.",
+        "scope": ["server/pyta_lsp/server.py"]
+      },
+      {
+        "rule": "Never write or restore a user's setting without checking the value currently on disk. The globalState snapshot records only what we overwrote and still owe back, and a setting no longer holding our ignore-all sentinel belongs to the user and must be left alone whatever the snapshot claims.",
+        "scope": ["src/onlyPyta.ts", "src/onlyPytaLogic.ts"]
+      },
+      {
+        "rule": "A setting written at Global scope loses to a workspace or workspace-folder value. Code that writes a setting and reports success must account for a higher-precedence scope silently overriding it.",
+        "scope": ["src/**"]
+      },
+      {
+        "rule": "bundled/libs is a build artifact the VSIX ships, not source. A change under server/ has no effect on the packaged extension until python scripts/bundle.py build regenerates it.",
+        "scope": ["server/**", "scripts/**"]
+      },
+      {
+        "rule": "Workflow secrets must be scoped to the single step that uses them. Declaring one at job level exposes it to dependency installation and build steps that have no need for it.",
+        "scope": [".github/workflows/**"]
+      }
+    ],
+    "files": [
+      {
+        "path": "docs/DEVLOG.md",
+        "description": "Project history. Sections 10 to 12 record every defect found by review so far, what was fixed, and which limits were accepted deliberately with reasoning. Consult it before reporting something as new, and before re-raising an accepted limit.",
+        "scope": ["**"]
+      }
+    ]
+  }
+}
