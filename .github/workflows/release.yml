@@ -37,7 +37,14 @@ jobs:
       - name: GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" pyta-checker-*.vsix --generate-notes
+        # Idempotent: a Marketplace failure after this step means the tag is rerun,
+        # and gh release create fails outright on a release that already exists.
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" pyta-checker-*.vsix --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" pyta-checker-*.vsix --generate-notes
+          fi
       - name: Publish to Marketplace (trusted publishing)
         if: vars.VSCE_USE_OIDC == 'true'
         run: npx @vscode/vsce publish --oidc --no-dependencies --packagePath pyta-checker-*.vsix --skip-duplicate
