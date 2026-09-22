@@ -49,17 +49,25 @@ def to_diagnostic(msg: dict[str, Any], lines: Sequence[str] | None) -> types.Dia
 
     end_line_raw = msg.get("end_line")
     end_col_raw = msg.get("end_column")
-    if end_line_raw is None or end_col_raw is None:
+    if end_col_raw is None:
+        # No end column: end of the relevant line (start line if end_line is
+        # also missing, otherwise the given end_line).
+        end_line0 = line0 if end_line_raw is None else max(int(end_line_raw) - 1, 0)
+        end_text = _line_text(lines, end_line0)
+        end_char = _utf16_col(end_text, len(end_text)) if end_text is not None else _UNKNOWN_END_COLUMN
+    elif end_line_raw is None:
+        # End column given without an end line: stays on the start line.
         end_line0 = line0
-        if start_text is not None:
-            end_char = max(_utf16_col(start_text, len(start_text)), start_char)
-        else:
-            end_char = _UNKNOWN_END_COLUMN
+        end_col = max(int(end_col_raw), 0)
+        end_char = _utf16_col(start_text, end_col) if start_text is not None else end_col
     else:
         end_line0 = max(int(end_line_raw) - 1, 0)
         end_text = _line_text(lines, end_line0)
         end_col = max(int(end_col_raw), 0)
         end_char = _utf16_col(end_text, end_col) if end_text is not None else end_col
+
+    if end_line0 == line0:
+        end_char = max(end_char, start_char)
 
     category = str(msg.get("category", ""))
     severity = (

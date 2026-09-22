@@ -59,6 +59,20 @@ def test_null_end_without_lines_uses_large_column() -> None:
     assert d.range.end.character >= 1000
 
 
+def test_end_line_without_end_column_extends_to_end_of_that_line() -> None:
+    lines = ["def f(\n", "    x=1\n", "):\n"]
+    d = to_diagnostic(_msg(line=1, column=4, end_line=2, end_column=None), lines)
+    assert d.range.start == types.Position(0, 4)
+    assert d.range.end == types.Position(1, len("    x=1"))
+
+
+def test_end_column_without_end_line_stays_on_start_line() -> None:
+    lines = ["    total=0\n"]
+    d = to_diagnostic(_msg(line=1, column=4, end_line=None, end_column=9), lines)
+    assert d.range.start == types.Position(0, 4)
+    assert d.range.end == types.Position(0, 9)
+
+
 def test_columns_are_utf16_units() -> None:
     lines = ["s = '😀😀'; y=1\n"]
     # Python index of "y" is 10; the two emoji occupy 4 UTF-16 units instead of 2.
