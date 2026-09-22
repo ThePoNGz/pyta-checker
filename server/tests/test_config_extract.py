@@ -228,3 +228,24 @@ def test_a_starred_argument_list_is_not_guessed_at() -> None:
     assert result.kind == "absent"
     assert result.load_default_config is None
     assert any("*" in w for w in result.warnings), result.warnings
+
+
+def test_a_keyword_config_is_read_even_beside_a_starred_argument_list() -> None:
+    # *args hides the positions, not the keywords. The keyword is right there.
+    source = "import python_ta\nARGS = ['a1.py']\npython_ta.check_all(*ARGS, config={'a': 1})\n"
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.kind == "dict"
+    assert result.value == {"a": 1}
+    assert result.warnings == []
+
+
+def test_a_starred_keyword_dict_is_not_guessed_at() -> None:
+    # **CFG can carry config or load_default_config and there is no way to tell,
+    # so this was silently checked against the defaults with nothing said.
+    source = "import python_ta\nCFG = {'config': {'a': 1}}\npython_ta.check_all('a1.py', **CFG)\n"
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.kind == "absent"
+    assert result.load_default_config is None
+    assert any("cannot be read" in w for w in result.warnings), result.warnings
