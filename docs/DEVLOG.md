@@ -324,3 +324,34 @@ The per-setting debt model is still there underneath, and still correct — **a 
 **This is the argument for the loop over a single pass.** Three of the five findings only existed because of a fix made in response to an earlier one. A single review would have found the first two and left a codebase that was, by the end of the loop, demonstrably still losing user settings in three other ways.
 
 **What it did not find.** Nothing in the byte/character column mapping, the generation guard, the import-shadowing fix, or the coding-cookie change — the four most intricate fixes on the branch. It also did not surface the items left open in sections 8 and 10, which is expected: those are design limits rather than defects in the diff it was shown.
+
+## 12. Whole-codebase review (2026-09-22)
+
+Sections 10 and 11 only ever looked at one branch. The majority of this project was written before any review existed, so the branch was merged and then the *whole* codebase was reviewed the same way.
+
+No pull request and no throwaway branch were needed for that. `greptile review --branch <commit>` takes a commit as well as a branch name, so pointing it at the repo's first commit makes the diff it reviews the entire tracked tree - 73 files, about 14,000 lines.
+
+It returned six findings. All six were real. Three were things sections 8 and 10 had already listed as open, which is the first independent confirmation any of them have had; the other three were new.
+
+| Finding | What it means | Status |
+| --- | --- | --- |
+| `VSCE_PAT` exposed to the whole release job | The Marketplace credential sat in the environment of `npm ci`, the bundle script and the build. | **fixed** |
+| A restart could outlive `deactivate()` | Deactivating during interpreter discovery left a language server running that nothing owned. | **fixed** |
+| Multi-root workspaces used the first folder's config | Every relative `configPath` resolved against folder one, whichever folder the file was in. | **fixed** |
+| Dirty buffers checked stale content | Listed as open in section 10, never confirmed. Now confirmed and fixed. | **fixed** |
+| Non-UTF-8 files could be parsed but not checked | Recorded in section 10 as an upstream wall. It was not one. | **fixed** |
+| A burst of opens starved the protocol reader | Section 8's known limit, independently reproduced including the worker arithmetic. | **fixed** |
+
+**The credential.** `VSCE_PAT` was declared at job level, so every step ran with it in the environment, including `npm ci` - which executes dependency lifecycle scripts - and both build scripts. None of them need it. The awkward part is that two steps test whether the token exists in their `if:` conditions, and a step `if:` cannot read the `secrets` context. The job now carries `HAS_VSCE_PAT`, a boolean, and the secret itself is declared on the single step that publishes.
+
+**The deactivation race.** `deactivate()` stopped whichever client was already assigned. A restart waiting on interpreter discovery had not assigned one yet, so it sailed past deactivation and started a server afterwards, which then belonged to nobody until the window closed. Deactivation now marks the extension disposed and waits for any restart in flight, and `startServer` checks that flag after discovery returns.
+
+**Two findings, one cause.** The dirty-buffer bug and the encoding wall were the same mistake: the runner was handed the path on disk. That path can hold different text than the editor shows, and it can hold bytes PythonTA cannot read.
+
+Both go away by checking a UTF-8 copy of the buffer instead. The copy cannot sit beside the original - a stray `.py` in a student's folder would be checked, committed and imported by accident - so it goes in a temp directory and the runner gained `--source-dir` for the folder that actually owns the file. Working directory, the `sys.path` entry and relative config paths all resolve against that, so sibling imports and embedded relative configs keep working while the file being parsed lives elsewhere.
+
+Worth correcting the record: section 10 concluded a cp1252 file "still cannot be checked" because PythonTA's own reader raises on it. That was true of the file, not of the situation - PythonTA never has to see those bytes. There is now a test that opens a cp1252 file and asserts real lint diagnostics come back rather than a read failure.
+
+**The starvation.** Section 8 recorded this as an architectural limit and section 10 left it open as needing `check()` rewritten. It needed much less than that. `did_open` and `did_save` ran the check inline on a pygls worker, and that pool also serves the stdin reader, so twelve opens put two workers in a subprocess and ten on the scheduler's semaphore with nothing left to read the next message. Checks now go to a pool of their own and the handlers return immediately; the semaphore still bounds the subprocesses. What made it tractable was a test that asserts `did_open` returns promptly while the check it triggered is still blocked - the behaviour, not the thread arithmetic.
+
+**On the three already-known items.** They had sat in "what remains" for two sections. Having an outside reviewer reach the same conclusions independently is what moved them, and two of the three turned out to be much smaller jobs than they had been written up as.
