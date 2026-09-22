@@ -138,9 +138,10 @@ def test_log_captures_logging_output_across_repeated_calls(fixtures: Path, monke
     assert "logged by pyta" in second["log"]
 
 
-def test_sys_path_is_restored_after_check(fixtures: Path) -> None:
+def test_sys_path_is_restored_after_check(fixtures: Path, monkeypatch) -> None:
     import sys
 
+    monkeypatch.setattr(sys, "path", list(sys.path))
     before = list(sys.path)
     run_check(fixtures / "clean.py")
     assert sys.path == before
@@ -150,3 +151,10 @@ def test_syntax_error_message_carries_full_key_set(fixtures: Path) -> None:
     msg = run_check(fixtures / "syntax_error.py")["messages"][0]
     for key in ("abspath", "confidence", "line_end", "column_end"):
         assert key in msg
+
+
+def test_pyta_precheck_failure_is_reported_as_error(fixtures: Path) -> None:
+    result = run_check(fixtures / "pylint_comment.py")
+    assert result["ok"] is False
+    assert "pylint:" in result["error"]
+    assert "[ERROR]" in result["log"]

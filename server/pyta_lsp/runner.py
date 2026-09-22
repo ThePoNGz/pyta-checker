@@ -132,10 +132,16 @@ def run_check(
     inserted_path = False
     # python_ta's logging.basicConfig only binds a handler on the first call in a
     # process, so a handler attached here directly to the root logger is the only
-    # way to reliably capture its log output on repeated in-process runs.
+    # way to reliably capture its log output on repeated in-process runs. Match
+    # pyta's own format/level so its "[ERROR] ..." pre-check failures still carry
+    # the prefix the fallback below looks for.
     root_logger = logging.getLogger()
     log_handler = logging.StreamHandler(log)
+    log_handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
     root_logger.addHandler(log_handler)
+    previous_level = root_logger.level
+    if previous_level == logging.NOTSET or previous_level > logging.INFO:
+        root_logger.setLevel(logging.INFO)
     try:
         os.chdir(file_path.parent)
         if parent_str not in sys.path:
@@ -153,6 +159,7 @@ def run_check(
     finally:
         log_handler.flush()
         root_logger.removeHandler(log_handler)
+        root_logger.setLevel(previous_level)
         if inserted_path:
             sys.path.remove(parent_str)
         os.chdir(old_cwd)
