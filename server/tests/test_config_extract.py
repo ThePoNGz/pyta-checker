@@ -83,3 +83,46 @@ def test_non_dict_non_string_literal_is_absent_with_warning() -> None:
     assert result.value is None
     assert len(result.warnings) == 1
     assert "neither a dict nor a string" in result.warnings[0]
+
+
+UNRELATED_FIRST = '''"""Doc."""
+import suite
+
+suite.check_all(config={'max-line-length': 200})
+
+if __name__ == '__main__':
+    import python_ta
+    python_ta.check_all(config={'max-line-length': 40})
+'''
+
+UNRELATED_ONLY = '''"""Doc."""
+import suite
+
+suite.check_all(config={'max-line-length': 200})
+'''
+
+ALIASED = '''"""Doc."""
+import python_ta as pyta
+
+pyta.check_all(config={'max-line-length': 60})
+'''
+
+
+def test_an_unrelated_check_all_does_not_supply_the_config(tmp_path: Path) -> None:
+    # Any helper named check_all used to win purely by sorting first, and the
+    # student would then be linted against settings the grader never applies.
+    result = extract_config(ast.parse(UNRELATED_FIRST), tmp_path)
+
+    assert result.kind == "dict"
+    assert result.value == {"max-line-length": 40}
+
+
+def test_a_file_with_only_an_unrelated_check_all_has_no_embedded_config(tmp_path: Path) -> None:
+    assert extract_config(ast.parse(UNRELATED_ONLY), tmp_path).kind == "absent"
+
+
+def test_an_aliased_python_ta_import_still_counts(tmp_path: Path) -> None:
+    result = extract_config(ast.parse(ALIASED), tmp_path)
+
+    assert result.kind == "dict"
+    assert result.value == {"max-line-length": 60}
