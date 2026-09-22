@@ -611,3 +611,52 @@ def test_the_runner_env_keeps_the_spawn_directory_off_sys_path() -> None:
     from pyta_lsp.scheduler import runner_env
 
     assert runner_env()["PYTHONSAFEPATH"] == "1"
+
+
+async def test_a_staged_check_sees_the_course_config_beside_the_file(
+    client: LanguageClient, tmp_path
+) -> None:
+    # PythonTA's reset_linter loads config/.pylintrc from beside the file it is
+    # given. The staged copy sits in a temp directory that has none, so the
+    # extension checked the student against a config their own run never uses.
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / ".pylintrc").write_text(
+        "[FORBIDDEN IMPORT]\nextra-imports = random\n", encoding="utf-8"
+    )
+    source = '"""Doc."""\nimport random\n\nX = random.random()\n'
+    path = tmp_path / "a1.py"
+    path.write_text(source, encoding="utf-8")
+    uri = path.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri, language_id="python", version=1, text=source
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in client.diagnostics[uri]}
+    assert "E9999" not in codes, "the course config beside the file was not applied"
+
+
+def test_the_local_config_lookup_matches_python_ta_s_own(tmp_path) -> None:
+    # The server cannot call python_ta.config.find_local_config without importing
+    # pylint and astroid into a process that lives for the session, so it carries
+    # its own copy of the lookup. This is what keeps the copy honest.
+    import os
+
+    from python_ta.config import find_local_config as pyta_find
+
+    from pyta_lsp.server import find_local_config
+
+    assert find_local_config(str(tmp_path)) is None
+    assert pyta_find(str(tmp_path)) is None
+    (tmp_path / "config").mkdir()
+    for name in ("pyproject.toml", "pylintrc", ".pylintrc"):
+        (tmp_path / "config" / name).write_text("", encoding="utf-8")
+        ours = find_local_config(str(tmp_path))
+        theirs = pyta_find(str(tmp_path))
+        assert ours is not None and theirs is not None
+        assert os.path.normcase(ours) == os.path.normcase(theirs), name

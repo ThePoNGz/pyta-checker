@@ -72,6 +72,24 @@ def is_package_module(path: str) -> bool:
     return os.path.isfile(os.path.join(os.path.dirname(path), "__init__.py"))
 
 
+# The order python_ta.config.find_local_config tries, and the only names it knows.
+_LOCAL_CONFIG_NAMES = (".pylintrc", "pylintrc", "pyproject.toml")
+
+
+def find_local_config(directory: str) -> str | None:
+    """The config/ file PythonTA would load from beside a file in `directory`.
+
+    A copy of python_ta.config.find_local_config: calling the real one would pull
+    pylint and astroid into a process that lives for the whole session, and the
+    server deliberately keeps that in the runner subprocess.
+    """
+    for name in _LOCAL_CONFIG_NAMES:
+        candidate = os.path.join(directory, "config", name)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def matches_disk(path: str, source: str) -> bool:
     """Whether the buffer is what a checker reading the file would see."""
     try:
@@ -171,6 +189,16 @@ class PytaLanguageServer(LanguageServer):
                 target = os.path.join(staging, os.path.basename(path))
                 with open(target, "w", encoding="utf-8", newline="") as handle:
                     handle.write(source)
+                # PythonTA loads config/.pylintrc from beside the file it is given,
+                # so without this the copy is checked against a different config
+                # than the student's own run uses.
+                local_config = find_local_config(source_dir)
+                if local_config:
+                    os.mkdir(os.path.join(staging, "config"))
+                    shutil.copyfile(
+                        local_config,
+                        os.path.join(staging, "config", os.path.basename(local_config)),
+                    )
             argv = [sys.executable, "-m", "pyta_lsp.runner", target, "--source-dir", source_dir]
             if self.settings.config_path:
                 argv += ["--config", self.settings.config_path]
