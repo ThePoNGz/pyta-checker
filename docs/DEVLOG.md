@@ -227,3 +227,55 @@ npm run test:integration                                 # launches VS Code agai
 ```
 
 Update PythonTA: change the pin in `server/requirements.in`, run `python scripts/bundle.py lock` then `build`, run the tests, commit the lockfile and `THIRD_PARTY_NOTICES.md`.
+
+## 10. Review pass (2026-09-22)
+
+The build was finished but unreviewed by anyone other than the agents that wrote it. This pass ran in three stages: prove it works headlessly, prove it works in a real editor, then have four independent reviewers read it cold, one dimension each.
+
+### Stage 1 and 2: it works
+
+Everything passed. TypeScript type-check, lint, and 16 unit tests; 66 Python tests on **3.14.6**, a version CI does not cover; 4 VS Code integration tests; the bundle verifying in isolated mode (`-I -B`) with python-ta resolving from `bundled/libs` and not the environment.
+
+Three specific claims from this devlog were re-tested rather than trusted:
+
+- **The false positives are real.** Same file, same bundled pyta, embedded config on vs off: `E9999 forbidden-import` twice and `E9998 forbidden-IO-function` once disappear. Exactly the three claimed in section 2.
+- **All 183 documented codes have live anchors** on the UofT checkers page. Zero dead links. Both pylint fallback URLs return 200.
+- **The Windows encoding hazard is handled.** A file with accented characters and an emoji produced correct diagnostics with no `UnicodeEncodeError`.
+
+Hands-on in a real editor confirmed one squiggle on the indexing line and none on the imports, the `print`, or the two 100-character lines, with correct severity layering where two diagnostics overlap on one line.
+
+### Stage 3: what four reviewers found
+
+Passing tests and working hands-on turned out not to mean safe to ship. Every finding below was independently reproduced before being accepted.
+
+| Finding | Effect on a student | Status |
+| --- | --- | --- |
+| `sys.path` pollution (code execution) | A `python_ta.py` beside an opened file is imported and run. `runOnOpen` means opening the file is enough. | **fixed** |
+| `sys.path` pollution (shadowing) | A file named `queue.py` — core CSC148 material — breaks checking for *every* file in that folder. | **fixed** |
+| only-PythonTA snapshots its own sentinel | Settings Sync or uninstall/reinstall makes `["**"]` the value we "restore" to. Pylance silent forever. | **fixed** |
+| The toggle was workspace-settable | A cloned repo's `.vscode/settings.json` could rewrite user settings, and toggling off could not escape. | **fixed** |
+| Snapshot discarded before the restore write | A failed restore threw away the only record of the original values. | **fixed** |
+| `SystemExit` escaped the error handler | A mistyped config path gave zero diagnostics and `runner exited with code 32`, real cause swallowed. | **fixed** |
+| Column base mismatch | Squiggles land on the wrong token on any line with non-ASCII to the left. | **fixed** |
+| `guard()` ignored its own generation | A slow thread could republish stale diagnostics over fresh ones. | **fixed** |
+| Orphaned `mypy` grandchildren | Every superseded check leaks a `mypy` process; the scheduler's limit does not bound them. | open |
+| Reader starvation at 12 open files | Already recorded in section 8. Raised the threshold; did not remove the mechanism. | open |
+| `didOpen` reads disk, maps onto the dirty buffer | After a window reload with unsaved edits, diagnostics can describe text that is not on screen. | open |
+| Stale status bar after restart; no `shutdown`/`exit` handler; shared `/tmp` mypy cache; non-UTF-8 coding cookie rejected; config extraction ignores ownership and reachability | minor | open |
+
+### The fixes, in plain terms
+
+**Import shadowing.** Running `python -m` puts the checked file's own folder at the *front* of the import search path, ahead of the bundled libraries and the standard library. Anything in that folder therefore wins. The folder still needs to be searchable so a student's own helper modules resolve, so it is now appended to the *end* of the path instead of the front, and the entry `-m` adds is removed outright. Stdlib and bundle win; student modules still resolve; nothing beside the file can impersonate `python_ta`.
+
+**Only-PythonTA settings.** Three separate changes. The snapshot no longer records our own `["**"]` as if it were a user value — when it sees the sentinel with no snapshot it records "absent", so disabling removes the setting rather than restoring the sentinel. The setting is now `scope: application`, so a workspace cannot set it. And the snapshot is deleted only after the restore writes actually land, with "that extension isn't installed" now distinguished from a genuine write failure instead of both being logged as benign.
+
+**SystemExit.** pyta and pylint call `sys.exit()` on bad config, and `SystemExit` is not an `Exception`, so it flew past the handler and killed the process before it could print anything. It is now caught, and since pyta logs the real cause immediately before exiting, that logged line is surfaced as the error.
+
+**Column bases.** PythonTA's JSON mixes two conventions in one message list: anything from astroid/pylint reports a UTF-8 *byte* offset, while `E9989` (pycodestyle) and the runner's own `E0001` report *character* offsets. Converting everything would have broken the latter two. The conversion is now per-message, keyed on the code.
+
+**Generation guard.** The guard compared "last completed" against "newest" but never against the generation of the thread actually calling it, so a straggler could publish once a newer run had completed. It now takes its own generation and requires all three to agree.
+
+### Two things worth remembering
+
+- **`bundled/libs/pyta_lsp` is a build artifact, not the source.** The VSIX ships that copy, so a server fix does nothing until `python scripts/bundle.py build` runs. A verification run was briefly fooled by the stale copy before this was noticed.
+- **`src/onlyPyta.ts` still has no test coverage.** Only the pure planners in `onlyPytaLogic.ts` are tested. The ordering fix there is verified by reading, not by a test, because exercising it needs a mocked `vscode` module.
