@@ -219,7 +219,7 @@ def test_a_config_file_message_is_an_information_diagnostic_on_line_one() -> Non
 
 
 def test_split_lines_only_breaks_where_python_and_the_editor_do() -> None:
-    # str.splitlines also breaks on \x0c, \x0b, \x1c-\x1e, \x85,   and  .
+    # str.splitlines also breaks on \x0c, \x0b, \x1c-\x1e, \x85, U+2028 and U+2029.
     # None of those is a line break to the tokenizer or to the editor, so from the
     # first one on every message lands on the wrong line.
     from pyta_lsp.diagnostics import split_lines
