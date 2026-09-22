@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .config_extract import ExtractedConfig, extract_config
+from .paths import mypy_cache_dir
 
 JSON_FORMAT = {"output-format": "pyta-json"}
 JSON_PYLINT_ARGS = ["--output-format", "pyta-json"]
@@ -210,6 +211,10 @@ def run_check(
         # so that nothing of the student's sits in sys.path[0].
         if not file_path.is_relative_to(Path(old_cwd).resolve()):
             os.chdir(file_path.parent)
+        # python_ta spawns mypy with this process's cwd and environment, and mypy
+        # writes a .mypy_cache into that cwd unless it is told otherwise. The
+        # server's spawn env pins this; a check run in process has to pin it too.
+        os.environ.setdefault("MYPY_CACHE_DIR", mypy_cache_dir())
         if parent_str not in sys.path:
             sys.path.append(parent_str)
             inserted_path = True

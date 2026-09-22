@@ -1,31 +1,20 @@
 """Run the runner subprocess per document. A newer request kills and supersedes an older one."""
 from __future__ import annotations
 
-import getpass
 import json
 import os
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 from typing import Any, Callable
+
+from .paths import mypy_cache_dir
 
 Spawn = Callable[[list[str], str], subprocess.Popen]
 
 # Identifies which run produced a result, so a stale thread cannot republish it.
 GENERATION_KEY = "__generation__"
-
-
-def _user_tag() -> str:
-    """A stable per-user component for paths under the shared temp directory."""
-    try:
-        name = getpass.getuser()
-    except (OSError, KeyError, ImportError):
-        uid = getattr(os, "getuid", None)
-        name = str(uid()) if uid is not None else ""
-    cleaned = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
-    return cleaned or "default"
 
 
 def runner_env() -> dict[str, str]:
@@ -37,12 +26,10 @@ def runner_env() -> dict[str, str]:
     # beside the checked file is never imported. Ignored on 3.10, where the cwd
     # the server chooses is what limits the damage.
     env["PYTHONSAFEPATH"] = "1"
-    # On a shared /tmp the first user to create a fixed cache directory owns it,
-    # and mypy then fails for everyone else. python_ta ignores mypy's return code,
-    # so E9951-E9956 would vanish with no error shown.
-    env["MYPY_CACHE_DIR"] = os.path.join(
-        tempfile.gettempdir(), f"pyta-checker-mypy-cache-{_user_tag()}"
-    )
+    # Set for the spawn whatever the server's own environment says, so a stray
+    # MYPY_CACHE_DIR inherited from the editor cannot point the cache at a
+    # directory the student's checks would fight over.
+    env["MYPY_CACHE_DIR"] = mypy_cache_dir()
     return env
 
 

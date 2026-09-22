@@ -401,3 +401,20 @@ def test_the_runner_stays_in_a_cwd_that_already_holds_the_file(tmp_path: Path, m
     assert visited == [os.getcwd()], f"the runner moved to {visited}"
     assert result["ok"] is True, result["error"]
     assert "E9952" in _codes(result), _codes(result)
+
+
+def test_an_in_process_check_leaves_no_mypy_cache_in_the_cwd(tmp_path: Path, monkeypatch) -> None:
+    # Only the server's spawn env pinned MYPY_CACHE_DIR, so a check run in this
+    # process -- the tests, or `python -m pyta_lsp.runner` by hand -- dropped a
+    # .mypy_cache wherever it happened to be standing. One of those was packaged
+    # into the VSIX from the repository root.
+    monkeypatch.delenv("MYPY_CACHE_DIR", raising=False)
+    target = tmp_path / "a1.py"
+    target.write_text('"""Doc."""\nCOUNT: int = "many"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    result = run_check(target)
+
+    assert result["ok"] is True, result["error"]
+    assert "E9952" in _codes(result), f"mypy never ran, so nothing is proven: {_codes(result)}"
+    assert not (tmp_path / ".mypy_cache").exists(), sorted(p.name for p in tmp_path.iterdir())
