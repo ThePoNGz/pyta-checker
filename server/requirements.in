@@ -1,0 +1,5 @@
+python-ta==2.13.1
+pygls>=2.1,<3
+# mypy 1.19+ pulls in librt, a compiled-only mypyc runtime with no pure wheel.
+# python-ta allows mypy~=1.13, so stay below 1.19 to keep the bundle pure-Python.
+mypy<1.19
