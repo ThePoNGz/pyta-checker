@@ -6,6 +6,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from pyta_lsp.runner import ENV_LIBS, ENV_STRATEGY, apply_import_strategy, run_check
 
 
@@ -359,9 +361,15 @@ def test_a_sibling_named_after_a_stdlib_module_is_not_imported_at_startup(tmp_pa
     assert data["ok"] is True, data["error"]
 
 
+@pytest.mark.skipif(
+    sys.version_info < (3, 11),
+    reason="an in-place check on 3.10 runs mypy in the student's folder: the residual recorded in DEVLOG 15",
+)
 def test_a_sibling_random_module_is_not_imported_by_the_mypy_subprocess(tmp_path: Path) -> None:
     # python_ta's StaticTypeChecker spawns `python -m mypy` with the runner's cwd,
-    # and mypy's own startup imports tempfile, which imports random.
+    # and mypy's own startup imports tempfile, which imports random. The file is
+    # checked in place here, so the runner chdirs into the student's folder and
+    # only PYTHONSAFEPATH keeps random.py out of that mypy.
     (tmp_path / "random.py").write_text(_SIBLING_MARKER, encoding="utf-8")
     (tmp_path / "a1.py").write_text('"""Doc."""\nCOUNT: int = 1\n', encoding="utf-8")
 
