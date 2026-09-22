@@ -150,3 +150,23 @@ def test_guard_rejects_a_result_from_a_superseded_generation(tmp_path: Path) -> 
     assert stale_published is False
     assert fresh_published is True
     assert calls == ["fresh"]
+
+
+def _grandchild_argv(marker: Path, sleep: float = 4.0) -> list[str]:
+    inner = f"import time, pathlib; time.sleep({sleep}); pathlib.Path({str(marker)!r}).write_text('ran')"
+    outer = f"import subprocess, sys; subprocess.run([sys.executable, '-c', {inner!r}], capture_output=True)"
+    return [sys.executable, "-c", outer]
+
+
+def test_kill_takes_down_grandchildren(tmp_path: Path) -> None:
+    # PythonTA shells out to mypy on every check, and that subprocess has no
+    # timeout of its own, so killing only the direct child leaks a live mypy
+    # process for every superseded or timed-out run.
+    marker = tmp_path / "GRANDCHILD_RAN.txt"
+    scheduler = CheckScheduler(timeout=1)
+
+    result = scheduler.run("doc", _grandchild_argv(marker), str(tmp_path))
+
+    assert result["error"].startswith("timed out")
+    time.sleep(6)
+    assert not marker.exists()
