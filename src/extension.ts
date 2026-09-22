@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { State, type LanguageClient } from 'vscode-languageclient/node';
 import { createClient, requestCheck } from './client';
 import { STATUS_NOTIFICATION, type StatusParams } from './client';
+import { SAVED_KEY, applyOnlyPyta, maybePromptFirstRun, toggleOnlyPyta } from './onlyPyta';
 import { findPython, onInterpreterChanged } from './python';
 import { getSettings } from './settings';
 import { StatusBar } from './statusBar';
@@ -20,13 +21,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('pythonta.showOutput', () => log.show(true)),
     vscode.commands.registerCommand('pythonta.restart', () => restartServer(context)),
     vscode.commands.registerCommand('pythonta.check', () => checkActiveFile()),
+    vscode.commands.registerCommand('pythonta.toggleOnlyPyta', () => toggleOnlyPyta()),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('pythonta.interpreter') || event.affectsConfiguration('pythonta.importStrategy')) {
         void restartServer(context);
       }
+      if (event.affectsConfiguration('pythonta.hideOtherPythonDiagnostics')) {
+        void applyOnlyPyta(getSettings().hideOtherPythonDiagnostics, context, log);
+      }
     }),
   );
   await startServer(context);
+  const settings = getSettings();
+  if (settings.hideOtherPythonDiagnostics || context.globalState.get(SAVED_KEY)) {
+    await applyOnlyPyta(settings.hideOtherPythonDiagnostics, context, log);
+  }
+  void maybePromptFirstRun(context);
   const watcher = await onInterpreterChanged(() => {
     log.info('Python interpreter changed; restarting PythonTA server');
     void restartServer(context);
