@@ -36,6 +36,12 @@
     "ms-python.python"
   ],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "PythonTA Checker runs a Python interpreter and reads PythonTA config files from the workspace, so it only activates in trusted workspaces."
+    }
+  },
   "contributes": {
     "commands": [
       {
@@ -83,6 +89,7 @@
         "pythonta.configPath": {
           "type": "string",
           "default": "",
+          "scope": "machine-overridable",
           "description": "PythonTA config file to use when a file has no embedded check_all(config=...). Relative paths resolve against the workspace folder."
         },
         "pythonta.importStrategy": {
@@ -101,6 +108,7 @@
         "pythonta.interpreter": {
           "type": "string",
           "default": "",
+          "scope": "machine-overridable",
           "description": "Absolute path to a Python 3.10+ executable. Overrides the Python extension's selected interpreter. Changing this restarts the server."
         },
         "pythonta.hideOtherPythonDiagnostics": {

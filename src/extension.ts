@@ -31,12 +31,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       }
     }),
   );
-  await startServer(context);
-  const settings = getSettings();
-  if (settings.hideOtherPythonDiagnostics || context.globalState.get(SAVED_KEY)) {
-    await applyOnlyPyta(settings.hideOtherPythonDiagnostics, context, log);
-  }
-  void maybePromptFirstRun(context);
   const watcher = await onInterpreterChanged(() => {
     log.info('Python interpreter changed; restarting PythonTA server');
     void restartServer(context);
@@ -44,6 +38,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   if (watcher) {
     context.subscriptions.push(watcher);
   }
+  await restartServer(context);
+  const settings = getSettings();
+  if (settings.hideOtherPythonDiagnostics || context.globalState.get(SAVED_KEY)) {
+    await applyOnlyPyta(settings.hideOtherPythonDiagnostics, context, log);
+  }
+  void maybePromptFirstRun(context);
 }
 
 export async function deactivate(): Promise<void> {
@@ -130,7 +130,16 @@ async function checkActiveFile(): Promise<void> {
     });
     return;
   }
-  await requestCheck(client, editor.document.uri);
+  try {
+    await requestCheck(client, editor.document.uri);
+  } catch (error) {
+    log.error(`PythonTA check failed: ${String(error)}`);
+    void vscode.window.showErrorMessage('PythonTA check failed.', 'Show Output').then((choice) => {
+      if (choice) {
+        log.show(true);
+      }
+    });
+  }
 }
 
 function showPythonError(message: string): void {
