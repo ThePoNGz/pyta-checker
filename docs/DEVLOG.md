@@ -227,3 +227,100 @@ npm run test:integration                                 # launches VS Code agai
 ```
 
 Update PythonTA: change the pin in `server/requirements.in`, run `python scripts/bundle.py lock` then `build`, run the tests, commit the lockfile and `THIRD_PARTY_NOTICES.md`.
+
+## 10. Review pass (2026-09-22)
+
+The build was finished but unreviewed by anyone other than the agents that wrote it. This pass ran in three stages: prove it works headlessly, prove it works in a real editor, then have four independent reviewers read it cold, one dimension each.
+
+### Stage 1 and 2: it works
+
+Everything passed. TypeScript type-check, lint, and 16 unit tests; 66 Python tests on **3.14.6**, a version CI does not cover; 4 VS Code integration tests; the bundle verifying in isolated mode (`-I -B`) with python-ta resolving from `bundled/libs` and not the environment.
+
+Three specific claims from this devlog were re-tested rather than trusted:
+
+- **The false positives are real.** Same file, same bundled pyta, embedded config on vs off: `E9999 forbidden-import` twice and `E9998 forbidden-IO-function` once disappear. Exactly the three claimed in section 2.
+- **All 183 documented codes have live anchors** on the UofT checkers page. Zero dead links. Both pylint fallback URLs return 200.
+- **The Windows encoding hazard is handled.** A file with accented characters and an emoji produced correct diagnostics with no `UnicodeEncodeError`.
+
+Hands-on in a real editor confirmed one squiggle on the indexing line and none on the imports, the `print`, or the two 100-character lines, with correct severity layering where two diagnostics overlap on one line.
+
+### Stage 3: what four reviewers found
+
+Passing tests and working hands-on turned out not to mean safe to ship. Every finding below was independently reproduced before being accepted.
+
+| Finding | Effect on a student | Status |
+| --- | --- | --- |
+| `sys.path` pollution (code execution) | A `python_ta.py` beside an opened file is imported and run. `runOnOpen` means opening the file is enough. | **fixed** |
+| `sys.path` pollution (shadowing) | A file named `queue.py` — core CSC148 material — breaks checking for *every* file in that folder. | **fixed** |
+| only-PythonTA snapshots its own sentinel | Settings Sync or uninstall/reinstall makes `["**"]` the value we "restore" to. Pylance silent forever. | **fixed** |
+| The toggle was workspace-settable | A cloned repo's `.vscode/settings.json` could rewrite user settings, and toggling off could not escape. | **fixed** |
+| Snapshot discarded before the restore write | A failed restore threw away the only record of the original values. | **fixed** |
+| `SystemExit` escaped the error handler | A mistyped config path gave zero diagnostics and `runner exited with code 32`, real cause swallowed. | **fixed** |
+| Column base mismatch | Squiggles land on the wrong token on any line with non-ASCII to the left. | **fixed** |
+| `guard()` ignored its own generation | A slow thread could republish stale diagnostics over fresh ones. | **fixed** |
+| Orphaned `mypy` grandchildren | Every superseded check leaks a `mypy` process; the scheduler's limit does not bound them. | **fixed** |
+| Non-UTF-8 coding cookie rejected | A PEP 263 cookie such as `cp1252` made the file unreadable. | partly; see below |
+| Reader starvation at 12 open files | Already recorded in section 8. Raised the threshold; did not remove the mechanism. | open |
+| `didOpen` reads disk, maps onto the dirty buffer | After a window reload with unsaved edits, diagnostics can describe text that is not on screen. | open |
+| Stale status bar after restart; no `shutdown`/`exit` handler; shared `/tmp` mypy cache; config extraction ignores ownership and reachability | minor | open |
+
+### The fixes, in plain terms
+
+**Import shadowing.** Running `python -m` puts the checked file's own folder at the *front* of the import search path, ahead of the bundled libraries and the standard library. Anything in that folder therefore wins. The folder still needs to be searchable so a student's own helper modules resolve, so it is now appended to the *end* of the path instead of the front, and the entry `-m` adds is removed outright. Stdlib and bundle win; student modules still resolve; nothing beside the file can impersonate `python_ta`.
+
+**Only-PythonTA settings.** Three separate changes. The snapshot no longer records our own `["**"]` as if it were a user value — when it sees the sentinel with no snapshot it records "absent", so disabling removes the setting rather than restoring the sentinel. The setting is now `scope: application`, so a workspace cannot set it. And the snapshot is deleted only after the restore writes actually land, with "that extension isn't installed" now distinguished from a genuine write failure instead of both being logged as benign.
+
+**SystemExit.** pyta and pylint call `sys.exit()` on bad config, and `SystemExit` is not an `Exception`, so it flew past the handler and killed the process before it could print anything. It is now caught, and since pyta logs the real cause immediately before exiting, that logged line is surfaced as the error.
+
+**Column bases.** PythonTA's JSON mixes two conventions in one message list: anything from astroid/pylint reports a UTF-8 *byte* offset, while `E9989` (pycodestyle) and the runner's own `E0001` report *character* offsets. Converting everything would have broken the latter two. The conversion is now per-message, keyed on the code.
+
+**Generation guard.** The guard compared "last completed" against "newest" but never against the generation of the thread actually calling it, so a straggler could publish once a newer run had completed. It now takes its own generation and requires all three to agree.
+
+**Orphaned mypy.** PythonTA runs mypy in a subprocess of its own on every check, with no timeout, and killing the runner left that mypy running — outside `max_parallel`, so save-heavy editing could stack up several at once. The runner is now spawned in its own process group (`CREATE_NEW_PROCESS_GROUP` on Windows, `start_new_session` elsewhere) and killed as a tree (`taskkill /F /T`, or `killpg`). The test proves a real grandchild dies with its parent; the specific mypy case was reproduced by the reviewer but runs too fast to sample reliably on this machine.
+
+**Coding cookies, and an upstream wall.** The runner read every file as UTF-8, so a PEP 263 cookie such as `# -*- coding: cp1252 -*-` made it unreadable. It now uses `tokenize.detect_encoding`, matching what python and pylint do — but PythonTA *itself* then fails on such a file with a `UnicodeDecodeError` from its own reader. Measured directly: python runs the file, `pylint` alone rates it 10.00/10, `python_ta.check_all` raises. So the file now parses correctly (a syntax error in it is reported as `E0001` rather than "could not read file"), but it still cannot be checked. Fixing that properly means transcoding to a temp UTF-8 copy, which is the same machinery as checking the editor's unsaved buffer, so it belongs with that work.
+
+### Two things worth remembering
+
+- **`bundled/libs/pyta_lsp` is a build artifact, not the source.** The VSIX ships that copy, so a server fix does nothing until `python scripts/bundle.py build` runs. A verification run was briefly fooled by the stale copy before this was noticed.
+- **`src/onlyPyta.ts` had no test coverage at this point.** Only the pure planners in `onlyPytaLogic.ts` were tested, so the ordering fix there was verified by reading rather than by a test. Section 11 closes this.
+## 11. Greptile review (2026-09-22)
+
+After the audit above, the branch was run through Greptile's CLI: `greptile review --branch main --agent`. Worth recording that this reviews the committed diff from the merge base through HEAD — it does not need a pull request, which contradicts the earlier assumption that Greptile was PR-only. That assumption came from the MCP tool, whose `trigger_code_review` does require a `prNumber`; the CLI does not.
+
+It was deliberately given no `--instructions`. Telling it what the branch was supposed to fix would have invited it to grade the fixes against their own description rather than against the code.
+
+It was run as a loop: review, fix, review again, until two consecutive passes returned no comments. That took six passes and produced five findings. All five were real, all were P1, and none overlapped with the nine found by the audit — every one sat in code this branch had just written, including code written to fix an earlier pass.
+
+| Finding | What it means | Status |
+| --- | --- | --- |
+| `taskkill`'s exit status ignored | The Windows tree-kill reported success even when it had failed, skipping the fallback. | **fixed** |
+| A refused restore still dropped the snapshot | Uninstalling basedpyright could make a user's original setting unrecoverable. | **fixed** |
+| A retained snapshot went stale (pass 2) | After a half-landed restore, a later toggle wrote an old value over a change the user had made since. | **fixed** |
+| A refused *enable* write still claimed the setting (pass 3) | Installing the missing extension and configuring it, then disabling, deleted the new value. | **fixed** |
+| Reconciliation could fail after writes landed (pass 4) | Judged already harmless once the sentinel guard was in; the real consequence was fixed instead. | declined, see below |
+| An edit made while Only-PythonTA was on was lost (pass 5) | A window reload re-asserted the sentinel over the edit and disabling handed back the older value. | **fixed** |
+
+**The ignored exit status.** `subprocess.run` does not raise on a non-zero exit unless `check=True` is passed, and it was not. The code returned unconditionally after calling `taskkill`, so a failed kill counted as a successful one and the `proc.kill()` fallback never ran — leaving the runner and its mypy descendants alive, which is the exact leak the tree-kill was added to close. It now returns only on exit code 0 and otherwise falls through to `proc.kill()`.
+
+**The refused restore.** The fix in section 10 stopped deleting the snapshot when a restore write failed, but treated "that extension isn't installed" as a benign skip rather than as a failure. It is not benign. The sequence: a student has a real `basedpyright.analysis.ignore` value; they turn Only-PythonTA on, so the snapshot is saved and `["**"]` is written into settings.json; they uninstall basedpyright; they turn Only-PythonTA off. The restore is refused because the setting is no longer registered — but the `["**"]` already written is still sitting in settings.json, because uninstalling an extension does not remove its entries. The snapshot, the only record of the original value, was then deleted. Reinstalling basedpyright would bring `["**"]` back into effect with nothing left to restore from. Every refused write now counts as a failed restore; the reason only decides which log line is written.
+
+**This one forced the test coverage.** The note at the end of section 10 said `src/onlyPyta.ts` could not be tested without a mocked `vscode` module. Fixing a data-loss bug in that file blind was not acceptable, so the mock now exists: `test/unit/vscodeStub.ts` provides `workspace.getConfiguration` with settable values and settable per-key rejections, and `vitest.config.mts` aliases `vscode` to it. The regression test walks the full sequence above and asserts the snapshot survives; a second test asserts the snapshot is still dropped when every write lands, so the fix cannot degrade into never cleaning up. Both were watched failing first.
+
+**Four passes in the same small file.** Passes 2 through 5 all landed on `src/onlyPyta.ts` and `src/onlyPytaLogic.ts`, and each fix moved the bug rather than removing it.
+
+- Pass 2: keeping the whole snapshot when *any* restore failed also kept entries that had already been restored. Those are the user's again, so a later toggle wrote a stale value over a change they had made since.
+- Pass 3: the mirror image on the enable side. The snapshot was saved in full before any write was attempted, so a write refused because the extension was not installed still recorded a claim on a setting we never touched. Install that extension, configure it, disable Only-PythonTA, and the claim deleted the new value.
+- Pass 5: `planEnable` kept whatever the snapshot already held, so an edit made while the sentinel was in place was overwritten on the next enable — a window reload is enough — and disabling later handed back the value from before the edit.
+
+The bookkeeping got steadily more careful and the bug kept surviving, because it was all reasoning about *the past*: what we wrote, what landed, what we think we own. The fix that actually ended it reasons about the present instead.
+
+**The guard that closed the class.** `planDisable` now reads the value on disk and restores a setting only while it still holds our `["**"]` sentinel. A section holding anything else was either never overwritten by us or has been changed since, so it is left alone whatever the snapshot claims. That single check makes every stale-bookkeeping path harmless at once: a refused write leaves a real value in place, so it is skipped; a user edit leaves a real value in place, so it is skipped; a snapshot that over-claims cannot act on the claim.
+
+The per-setting debt model is still there underneath, and still correct — **a section present in the snapshot is one we have overwritten and still owe back**, a landed restore discharges it, a refused one keeps it, and `planEnable` re-records any real value it finds on disk. But it is now the bookkeeping, not the safety. The safety is the guard.
+
+**What was declined.** Pass 4 reported that if the final `globalState` write rejects, the optimistic snapshot saved before the writes stays behind and can claim a setting whose write failed. That is accurate about the snapshot and wrong about the consequence: with the sentinel guard, a claim on a setting that does not hold `["**"]` is never acted on. The review was reasoning about snapshot contents in isolation. What *was* real in that path is that the rejection propagated and skipped the language-server restarts, leaving stale problems on screen until a reload — so the snapshot write is now logged rather than fatal, which is the part worth fixing.
+
+**This is the argument for the loop over a single pass.** Three of the five findings only existed because of a fix made in response to an earlier one. A single review would have found the first two and left a codebase that was, by the end of the loop, demonstrably still losing user settings in three other ways.
+
+**What it did not find.** Nothing in the byte/character column mapping, the generation guard, the import-shadowing fix, or the coding-cookie change — the four most intricate fixes on the branch. It also did not surface the items left open in sections 8 and 10, which is expected: those are design limits rather than defects in the diff it was shown.

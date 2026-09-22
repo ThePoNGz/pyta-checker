@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { IGNORE_ALL, TARGETS, planDisable, planEnable } from '../../src/onlyPytaLogic';
+import {
+  IGNORE_ALL,
+  TARGETS,
+  isUnregisteredSettingError,
+  newlyClaimed,
+  planDisable,
+  planEnable,
+} from '../../src/onlyPytaLogic';
 
 describe('TARGETS', () => {
   it('covers pylance (via the python extension) and basedpyright with verified command ids', () => {
@@ -24,17 +31,86 @@ describe('planEnable', () => {
     const plan = planEnable({ python: IGNORE_ALL, basedpyright: IGNORE_ALL }, { python: null, basedpyright: ['x'] });
     expect(plan.saved).toEqual({ python: null, basedpyright: ['x'] });
   });
+
+  it('never snapshots our own ignore-all when the snapshot is missing', () => {
+    // Settings Sync carries settings between machines but not globalState, and
+    // uninstall drops globalState while leaving settings behind. Recording the
+    // sentinel here would make it the value we "restore" to, permanently.
+    const plan = planEnable({ python: IGNORE_ALL, basedpyright: ['**'] }, undefined);
+    expect(plan.saved).toEqual({ python: null, basedpyright: null });
+  });
+
+  it('still snapshots a real user value that happens to sit beside a sentinel', () => {
+    const plan = planEnable({ python: ['mine'], basedpyright: IGNORE_ALL }, undefined);
+    expect(plan.saved).toEqual({ python: ['mine'], basedpyright: null });
+  });
+
+  it('records a value the user set while Only-PythonTA was on', () => {
+    // A real value on disk can only have come from the user, so it replaces what we
+    // recorded - otherwise a window reload re-asserts the sentinel over their edit
+    // and disabling later hands back the value from two edits ago.
+    const plan = planEnable({ python: ['new'], basedpyright: IGNORE_ALL }, { python: ['old'], basedpyright: ['b'] });
+    expect(plan.saved).toEqual({ python: ['new'], basedpyright: ['b'] });
+  });
+
+  it('records the current value for a section a partial snapshot does not cover', () => {
+    // A partial snapshot means an earlier restore only half landed. The sections
+    // it no longer covers were handed back to the user, so their value now is the
+    // one we owe them.
+    const plan = planEnable({ python: ['changed'], basedpyright: IGNORE_ALL }, { basedpyright: ['b'] });
+    expect(plan.saved).toEqual({ python: ['changed'], basedpyright: ['b'] });
+  });
 });
 
 describe('planDisable', () => {
   it('restores saved values and removes keys that were absent', () => {
-    expect(planDisable({ python: ['src/generated'], basedpyright: null })).toEqual([
+    expect(
+      planDisable({ python: ['src/generated'], basedpyright: null }, { python: IGNORE_ALL, basedpyright: IGNORE_ALL }),
+    ).toEqual([
       { section: 'python', key: 'analysis.ignore', value: ['src/generated'] },
       { section: 'basedpyright', key: 'analysis.ignore', value: undefined },
     ]);
   });
 
   it('writes nothing when there is no snapshot', () => {
-    expect(planDisable(undefined)).toEqual([]);
+    expect(planDisable(undefined, { python: IGNORE_ALL, basedpyright: IGNORE_ALL })).toEqual([]);
+  });
+
+  it('skips a section that no longer holds our sentinel', () => {
+    // Either our write never landed or the user has changed it since. Either way
+    // the value on disk is theirs, not ours to write over.
+    expect(
+      planDisable({ python: ['p'], basedpyright: ['b'] }, { python: ['theirs'], basedpyright: IGNORE_ALL }),
+    ).toEqual([{ section: 'basedpyright', key: 'analysis.ignore', value: ['b'] }]);
+  });
+
+  it('leaves alone a section the snapshot does not cover', () => {
+    expect(planDisable({ basedpyright: ['b'] }, { python: IGNORE_ALL, basedpyright: IGNORE_ALL })).toEqual([
+      { section: 'basedpyright', key: 'analysis.ignore', value: ['b'] },
+    ]);
+  });
+});
+
+describe('isUnregisteredSettingError', () => {
+  it('recognises a target extension simply not being installed', () => {
+    const error = new Error(
+      'Unable to write to User Settings because basedpyright.analysis.ignore is not a registered configuration.',
+    );
+    expect(isUnregisteredSettingError(error)).toBe(true);
+  });
+
+  it('does not excuse a real write failure', () => {
+    // A read-only or malformed settings.json must keep the snapshot alive.
+    expect(isUnregisteredSettingError(new Error('EACCES: permission denied, open settings.json'))).toBe(false);
+  });
+});
+
+describe('newlyClaimed', () => {
+  it('claims only sections an earlier cycle was not already owed', () => {
+    expect(newlyClaimed({ basedpyright: ['b'] }, { basedpyright: ['b'], python: ['p'] })).toEqual(new Set(['python']));
+  });
+
+  it('claims every section when there is no snapshot yet', () => {
+    expect(newlyClaimed(undefined, { python: null, basedpyright: null })).toEqual(new Set(['python', 'basedpyright']));
   });
 });

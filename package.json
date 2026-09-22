@@ -114,6 +114,7 @@
         "pythonta.hideOtherPythonDiagnostics": {
           "type": "boolean",
           "default": false,
+          "scope": "application",
           "description": "Hide Pylance and basedpyright problems so only PythonTA's show. Autocomplete keeps working. Toggle with the 'PythonTA: Toggle Only-PythonTA Problems' command."
         },
         "pythonta.trace.server": {

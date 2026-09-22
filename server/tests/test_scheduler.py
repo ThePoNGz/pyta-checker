@@ -3,7 +3,7 @@ import threading
 import time
 from pathlib import Path
 
-from pyta_lsp.scheduler import CheckScheduler
+from pyta_lsp.scheduler import GENERATION_KEY, CheckScheduler
 
 
 def _echo_argv(tag: str, delay: float = 0.0) -> list[str]:
@@ -18,6 +18,7 @@ def _echo_argv(tag: str, delay: float = 0.0) -> list[str]:
 def test_run_returns_parsed_json(tmp_path: Path) -> None:
     scheduler = CheckScheduler(timeout=30)
     result = scheduler.run("doc", _echo_argv("one"), str(tmp_path))
+    assert result.pop(GENERATION_KEY) == 1
     assert result == {"ok": True, "messages": [], "tag": "one"}
 
 
@@ -93,23 +94,23 @@ def test_cancel_kills_in_flight(tmp_path: Path) -> None:
 
 def test_guard_runs_action_after_current_run(tmp_path: Path) -> None:
     scheduler = CheckScheduler(timeout=30)
-    scheduler.run("doc", _echo_argv("one"), str(tmp_path))
+    result = scheduler.run("doc", _echo_argv("one"), str(tmp_path))
     calls: list[str] = []
-    assert scheduler.guard("doc", lambda: calls.append("published")) is True
+    assert scheduler.guard("doc", result[GENERATION_KEY], lambda: calls.append("published")) is True
     assert calls == ["published"]
 
 
 def test_guard_skips_action_after_cancel(tmp_path: Path) -> None:
     scheduler = CheckScheduler(timeout=30)
-    scheduler.run("doc", _echo_argv("one"), str(tmp_path))
+    result = scheduler.run("doc", _echo_argv("one"), str(tmp_path))
     scheduler.cancel("doc")
     calls: list[str] = []
-    assert scheduler.guard("doc", lambda: calls.append("published")) is False
+    assert scheduler.guard("doc", result[GENERATION_KEY], lambda: calls.append("published")) is False
     assert calls == []
 
 
 def test_guard_skips_action_for_unknown_key() -> None:
-    assert CheckScheduler(timeout=30).guard("never-run", lambda: None) is False
+    assert CheckScheduler(timeout=30).guard("never-run", 1, lambda: None) is False
 
 
 def test_parallel_runs_are_bounded(tmp_path: Path) -> None:
@@ -135,3 +136,67 @@ def test_runner_env_forces_utf8_and_redirects_mypy_cache() -> None:
     assert env["PYTHONIOENCODING"] == "utf-8"
     assert env["PYTHONUTF8"] == "1"
     assert env["MYPY_CACHE_DIR"].endswith("pyta-checker-mypy-cache")
+
+
+def test_guard_rejects_a_result_from_a_superseded_generation(tmp_path: Path) -> None:
+    scheduler = CheckScheduler(timeout=30)
+    first = scheduler.run("doc", _echo_argv("one"), str(tmp_path))
+    second = scheduler.run("doc", _echo_argv("two"), str(tmp_path))
+    calls: list[str] = []
+
+    stale_published = scheduler.guard("doc", first[GENERATION_KEY], lambda: calls.append("stale"))
+    fresh_published = scheduler.guard("doc", second[GENERATION_KEY], lambda: calls.append("fresh"))
+
+    assert stale_published is False
+    assert fresh_published is True
+    assert calls == ["fresh"]
+
+
+def _grandchild_argv(marker: Path, sleep: float = 4.0) -> list[str]:
+    inner = f"import time, pathlib; time.sleep({sleep}); pathlib.Path({str(marker)!r}).write_text('ran')"
+    outer = f"import subprocess, sys; subprocess.run([sys.executable, '-c', {inner!r}], capture_output=True)"
+    return [sys.executable, "-c", outer]
+
+
+def test_kill_takes_down_grandchildren(tmp_path: Path) -> None:
+    # PythonTA shells out to mypy on every check, and that subprocess has no
+    # timeout of its own, so killing only the direct child leaks a live mypy
+    # process for every superseded or timed-out run.
+    marker = tmp_path / "GRANDCHILD_RAN.txt"
+    scheduler = CheckScheduler(timeout=1)
+
+    result = scheduler.run("doc", _grandchild_argv(marker), str(tmp_path))
+
+    assert result["error"].startswith("timed out")
+    time.sleep(6)
+    assert not marker.exists()
+
+
+def test_kill_falls_back_when_taskkill_reports_failure(monkeypatch) -> None:
+    # taskkill exits nonzero when it cannot reach the tree. subprocess.run does not
+    # raise on that, so returning regardless skipped the fallback and left the
+    # runner alive.
+    import subprocess as sp
+
+    from pyta_lsp import scheduler
+
+    if sys.platform != "win32":
+        import pytest
+
+        pytest.skip("taskkill is the win32 branch")
+
+    killed: list[str] = []
+
+    class FakeProc:
+        pid = 4321
+
+        def poll(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            killed.append("kill")
+
+    monkeypatch.setattr(sp, "run", lambda argv, **kw: sp.CompletedProcess(argv, 1, b"", b"ERROR: not found"))
+    scheduler._kill(FakeProc())
+
+    assert killed == ["kill"]

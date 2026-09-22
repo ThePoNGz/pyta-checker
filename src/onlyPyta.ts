@@ -1,5 +1,13 @@
 import * as vscode from 'vscode';
-import { TARGETS, planDisable, planEnable, type Snapshot, type Write } from './onlyPytaLogic';
+import {
+  TARGETS,
+  isUnregisteredSettingError,
+  newlyClaimed,
+  planDisable,
+  planEnable,
+  type Snapshot,
+  type Write,
+} from './onlyPytaLogic';
 import { SECTION } from './settings';
 
 export const SAVED_KEY = 'pythonta.savedIgnore';
@@ -35,29 +43,62 @@ async function applyOnlyPytaNow(
   log: vscode.LogOutputChannel,
 ): Promise<void> {
   const saved = context.globalState.get<Snapshot>(SAVED_KEY);
+  const current = readCurrent();
   let writes: Write[];
+  let owed: Snapshot;
+  let claiming: Set<string>;
   if (enabled) {
-    const current: Snapshot = {};
-    for (const target of TARGETS) {
-      const inspected = vscode.workspace.getConfiguration(target.section).inspect<unknown>(target.key);
-      current[target.section] = inspected?.globalValue === undefined ? null : inspected.globalValue;
-    }
     const plan = planEnable(current, saved);
+    // Written before the overwrites so a crash mid-loop cannot lose the originals;
+    // reconciled against what actually landed once the loop is done.
     await context.globalState.update(SAVED_KEY, plan.saved);
+    owed = { ...plan.saved };
+    claiming = newlyClaimed(saved, plan.saved);
     writes = plan.writes;
   } else {
-    writes = planDisable(saved);
-    await context.globalState.update(SAVED_KEY, undefined);
+    writes = planDisable(saved, current);
+    // Anything the snapshot claims but planDisable declined is the user's again.
+    owed = Object.fromEntries(writes.map((w) => [w.section, saved?.[w.section]]));
+    claiming = new Set();
   }
   for (const write of writes) {
     try {
       await vscode.workspace.getConfiguration(write.section).update(write.key, write.value, vscode.ConfigurationTarget.Global);
+      if (!enabled) {
+        delete owed[write.section];
+      }
       log.info(`${enabled ? 'Set' : 'Restored'} ${write.section}.${write.key}`);
     } catch (error) {
-      log.info(`Skipping ${write.section}.${write.key} (extension not installed?): ${String(error)}`);
+      // A refused write changes nothing, so it neither claims a setting on enable
+      // nor discharges what we owe on disable. The reason only picks the log line.
+      if (claiming.has(write.section)) {
+        delete owed[write.section];
+      }
+      if (isUnregisteredSettingError(error)) {
+        log.info(`Skipping ${write.section}.${write.key} (extension not installed)`);
+      } else {
+        log.warn(`Could not write ${write.section}.${write.key}: ${String(error)}`);
+      }
     }
   }
+  // The snapshot is the only record of the user's original values: it holds exactly
+  // the settings we have overwritten and still owe back. A failure here can only
+  // leave it over-claiming, which planDisable filters out, so it is not fatal.
+  try {
+    await context.globalState.update(SAVED_KEY, Object.keys(owed).length > 0 ? owed : undefined);
+  } catch (error) {
+    log.warn(`Could not update the saved ignore snapshot: ${String(error)}`);
+  }
   await restartOtherServers(log);
+}
+
+function readCurrent(): Snapshot {
+  const current: Snapshot = {};
+  for (const target of TARGETS) {
+    const inspected = vscode.workspace.getConfiguration(target.section).inspect<unknown>(target.key);
+    current[target.section] = inspected?.globalValue === undefined ? null : inspected.globalValue;
+  }
+  return current;
 }
 
 async function restartOtherServers(log: vscode.LogOutputChannel): Promise<void> {
