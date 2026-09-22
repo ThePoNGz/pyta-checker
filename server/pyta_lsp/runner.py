@@ -99,6 +99,36 @@ def _syntax_error_message(exc: SyntaxError, path: Path) -> dict[str, Any]:
     }
 
 
+def _owns(filename: str, target: Path) -> bool:
+    try:
+        return os.path.normcase(os.path.realpath(filename)) == os.path.normcase(str(target))
+    except (OSError, ValueError):
+        return False
+
+
+def _split_messages(report_data: list[Any], target: Path) -> tuple[list[Any], list[str]]:
+    """Separate the checked file's messages from every other file's.
+
+    The reporter keeps an entry per file it read and drops only the non-.py ones
+    with nothing to say, so a bad option in the course config arrives here
+    carrying that file's line numbers.
+    """
+    messages: list[Any] = []
+    warnings: list[str] = []
+    for entry in report_data:
+        msgs = entry.get("msgs", [])
+        if not msgs:
+            continue
+        filename = entry.get("filename") or ""
+        if not filename or _owns(filename, target):
+            messages.extend(msgs)
+            continue
+        warnings.extend(
+            f"{filename}: {m.get('msg_id', '')} {m.get('msg', '')}".strip() for m in msgs
+        )
+    return messages, warnings
+
+
 def _resolve_config(
     extracted: ExtractedConfig, config_path: str | None, workspace_root: str | None, file_dir: Path
 ) -> tuple[dict[str, Any] | str, list[str] | None, str]:
@@ -152,6 +182,7 @@ def run_check(
     )
     result["warnings"].extend(extracted.warnings)
     errors_only = errors_only or extracted.errors_only
+    load_default_config = True if extracted.load_default_config is None else extracted.load_default_config
     config, pylint_args, source_kind = _resolve_config(extracted, config_path, workspace_root, base_dir)
     result["config_source"] = source_kind
 
@@ -183,7 +214,16 @@ def run_check(
             result["pyta_version"] = getattr(python_ta, "__version__", "unknown")
             result["pyta_location"] = os.path.dirname(python_ta.__file__)
             checker = python_ta.check_errors if errors_only else python_ta.check_all
-            checker(str(file_path), config=config, output=report, pylint_args=pylint_args)
+            # pylint_args is ours: it carries the reporter this runner parses, and
+            # pyta reads the first --output-format it finds, so a student's own
+            # list could silently take the output away.
+            checker(
+                str(file_path),
+                config=config,
+                output=report,
+                load_default_config=load_default_config,
+                pylint_args=pylint_args,
+            )
     except (Exception, SystemExit) as exc:  # pyta and pylint raise many types, and both call sys.exit()
         result.update(ok=False, error=f"{type(exc).__name__}: {exc}", traceback=traceback.format_exc())
     finally:
@@ -209,7 +249,9 @@ def run_check(
     except json.JSONDecodeError:
         result.update(ok=False, error="PythonTA produced output that is not JSON", traceback=raw[-2000:])
         return result
-    result["messages"] = [m for entry in report_data for m in entry.get("msgs", [])]
+    messages, elsewhere = _split_messages(report_data, file_path)
+    result["messages"] = messages
+    result["warnings"].extend(elsewhere)
     return result
 
 

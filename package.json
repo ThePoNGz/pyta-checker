@@ -12,6 +12,9 @@
   "bugs": {
     "url": "https://github.com/ThePoNGz/pyta-checker/issues"
   },
+  "icon": "media/icon.png",
+  "homepage": "https://github.com/ThePoNGz/pyta-checker#readme",
+  "qna": "https://github.com/ThePoNGz/pyta-checker/issues",
   "engines": {
     "vscode": "^1.101.0"
   },

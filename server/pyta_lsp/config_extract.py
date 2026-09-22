@@ -15,6 +15,8 @@ class ExtractedConfig:
     value: dict[str, Any] | str | None
     errors_only: bool
     warnings: list[str] = field(default_factory=list)
+    # None means the call said nothing, so pyta's own default stands.
+    load_default_config: bool | None = None
 
 
 def _pyta_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
@@ -66,37 +68,68 @@ def _check_calls(tree: ast.AST) -> list[tuple[str, ast.Call]]:
     return calls
 
 
+def _keyword(call: ast.Call, name: str) -> ast.keyword | None:
+    return next((kw for kw in call.keywords if kw.arg == name), None)
+
+
+def _load_default_config(call: ast.Call, name: str) -> tuple[bool | None, list[str]]:
+    """A literal load_default_config, or None when the call did not pin it down.
+
+    A course file that turns the defaults off is otherwise checked against them
+    merged in, which is not what the grader runs.
+    """
+    kw = _keyword(call, "load_default_config")
+    if kw is None:
+        return None, []
+    try:
+        value = ast.literal_eval(kw.value)
+    except (ValueError, SyntaxError, TypeError):
+        value = None
+    if isinstance(value, bool):
+        return value, []
+    return None, [
+        f"line {call.lineno}: load_default_config argument to {name}() is not a literal bool; ignoring it"
+    ]
+
+
 def extract_config(tree: ast.AST, base_dir: Path) -> ExtractedConfig:
     calls = _check_calls(tree)
     if not calls:
         return ExtractedConfig("absent", None, False)
 
-    errors_only = calls[0][0] == "check_errors"
-    for name, call in calls:
-        config_kw = next((kw for kw in call.keywords if kw.arg == "config"), None)
-        if config_kw is None:
-            continue
-        errors_only = name == "check_errors"
-        try:
-            value = ast.literal_eval(config_kw.value)
-        except (ValueError, SyntaxError, TypeError):
-            return ExtractedConfig(
-                "absent",
-                None,
-                errors_only,
-                [f"line {call.lineno}: config argument to {name}() is not a literal; using defaults"],
-            )
-        if isinstance(value, dict):
-            return ExtractedConfig("dict", value, errors_only)
-        if isinstance(value, str):
-            path = Path(value)
-            if not path.is_absolute():
-                path = base_dir / path
-            return ExtractedConfig("path", str(path), errors_only)
+    # The call that supplies the config is the one whose other arguments apply.
+    name, call = next(
+        ((n, c) for n, c in calls if _keyword(c, "config") is not None), calls[0]
+    )
+    load_default, warnings = _load_default_config(call, name)
+    config_kw = _keyword(call, "config")
+    if config_kw is None:
+        errors_only = calls[0][0] == "check_errors"
+        return ExtractedConfig("absent", None, errors_only, warnings, load_default)
+
+    errors_only = name == "check_errors"
+    try:
+        value = ast.literal_eval(config_kw.value)
+    except (ValueError, SyntaxError, TypeError):
         return ExtractedConfig(
             "absent",
             None,
             errors_only,
-            [f"line {call.lineno}: config argument to {name}() is neither a dict nor a string; using defaults"],
+            warnings + [f"line {call.lineno}: config argument to {name}() is not a literal; using defaults"],
+            load_default,
         )
-    return ExtractedConfig("absent", None, errors_only)
+    if isinstance(value, dict):
+        return ExtractedConfig("dict", value, errors_only, warnings, load_default)
+    if isinstance(value, str):
+        path = Path(value)
+        if not path.is_absolute():
+            path = base_dir / path
+        return ExtractedConfig("path", str(path), errors_only, warnings, load_default)
+    return ExtractedConfig(
+        "absent",
+        None,
+        errors_only,
+        warnings
+        + [f"line {call.lineno}: config argument to {name}() is neither a dict nor a string; using defaults"],
+        load_default,
+    )

@@ -39,7 +39,7 @@ If nothing appears, open **View > Output** and pick **PythonTA** from the dropdo
 | `pythonta.configPath` | `""` | PythonTA config file used when the file has no embedded `check_all(config=...)`. Relative to the workspace folder. |
 | `pythonta.importStrategy` | `useBundled` | `useBundled` runs the PythonTA inside the extension. `fromEnvironment` prefers the PythonTA installed in your selected interpreter and falls back to the bundled one. |
 | `pythonta.interpreter` | `""` | Absolute path to a Python executable; overrides the Python extension's selection. |
-| `pythonta.hideOtherPythonDiagnostics` | `false` | Managed by the toggle command. When true, `python.analysis.ignore` and `basedpyright.analysis.ignore` are set to `["**"]` in your user settings; turning it off restores the previous values. |
+| `pythonta.hideOtherPythonDiagnostics` | `false` | Managed by the toggle command. When true, `python.analysis.ignore` and `basedpyright.analysis.ignore` are set to `["**"]` in your user settings; turning it off restores the previous values. VS Code has no uninstall hook, so if you uninstall the extension while this is on, those settings keep the `["**"]` value; turn the toggle off first, or remove the two `analysis.ignore` entries from `settings.json` by hand. |
 | `pythonta.trace.server` | `off` | Language server tracing. |
 
 ## How the config is found

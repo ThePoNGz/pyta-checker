@@ -3,6 +3,7 @@
 .vscode-test.mjs
 .github/**
 .superpowers/**
+greptile.json
 src/**
 server/**
 scripts/**

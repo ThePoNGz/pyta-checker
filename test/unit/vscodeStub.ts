@@ -16,9 +16,35 @@ interface StubState {
   commands: string[];
   ran: string[];
   warned: string[];
+  /** Ids of settings an update() actually changed, in order. */
+  writes: string[];
+  info: string[];
+  errors: string[];
+  /** What showInformationMessage resolves to. */
+  answer: unknown;
+  /** What showErrorMessage resolves to. */
+  errorAnswer: unknown;
+  /** Runs while showInformationMessage is open, to model a value changing under it. */
+  onInfo: (() => void) | undefined;
+  /** Runs inside a landed update(), to model the configuration event firing there. */
+  onUpdate: ((id: string) => void) | undefined;
 }
 
-export const state: StubState = { values: {}, rejects: {}, scoped: {}, commands: [], ran: [], warned: [] };
+export const state: StubState = {
+  values: {},
+  rejects: {},
+  scoped: {},
+  commands: [],
+  ran: [],
+  warned: [],
+  writes: [],
+  info: [],
+  errors: [],
+  answer: undefined,
+  errorAnswer: undefined,
+  onInfo: undefined,
+  onUpdate: undefined,
+};
 
 export function resetStub(): void {
   state.values = {};
@@ -27,6 +53,13 @@ export function resetStub(): void {
   state.commands = [];
   state.ran = [];
   state.warned = [];
+  state.writes = [];
+  state.info = [];
+  state.errors = [];
+  state.answer = undefined;
+  state.errorAnswer = undefined;
+  state.onInfo = undefined;
+  state.onUpdate = undefined;
 }
 
 function id(section: string, key: string): string {
@@ -56,11 +89,13 @@ export const workspace = {
         if (rejection !== undefined) {
           throw new Error(rejection);
         }
+        state.writes.push(target);
         if (value === undefined) {
           delete state.values[target];
         } else {
           state.values[target] = value;
         }
+        state.onUpdate?.(target);
       },
     };
   },
@@ -91,11 +126,14 @@ export enum StatusBarAlignment {
 
 export const window = {
   activeTextEditor: undefined,
-  async showInformationMessage(): Promise<undefined> {
-    return undefined;
+  async showInformationMessage(message: string): Promise<unknown> {
+    state.info.push(message);
+    state.onInfo?.();
+    return state.answer;
   },
-  async showErrorMessage(): Promise<undefined> {
-    return undefined;
+  async showErrorMessage(message: string): Promise<unknown> {
+    state.errors.push(message);
+    return state.errorAnswer;
   },
   async showWarningMessage(message: string): Promise<undefined> {
     state.warned.push(message);

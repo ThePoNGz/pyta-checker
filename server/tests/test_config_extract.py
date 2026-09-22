@@ -126,3 +126,49 @@ def test_an_aliased_python_ta_import_still_counts(tmp_path: Path) -> None:
 
     assert result.kind == "dict"
     assert result.value == {"max-line-length": 60}
+
+
+def test_load_default_config_is_extracted_from_the_call_that_supplies_the_config() -> None:
+    # Without it the file is checked against PythonTA's defaults merged in, which
+    # is not what the course file asked for or what the grader runs.
+    source = (
+        "import python_ta\n"
+        "python_ta.check_all(config='course.txt', load_default_config=False)\n"
+    )
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.load_default_config is False
+
+
+def test_load_default_config_is_unset_when_the_call_omits_it() -> None:
+    source = "import python_ta\npython_ta.check_all(config={'a': 1})\n"
+
+    assert extract_config(ast.parse(source), Path(".")).load_default_config is None
+
+
+def test_load_default_config_is_read_even_without_a_config_keyword() -> None:
+    source = "import python_ta\npython_ta.check_all(load_default_config=False)\n"
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.kind == "absent"
+    assert result.load_default_config is False
+
+
+def test_nonliteral_load_default_config_is_ignored_with_a_warning() -> None:
+    source = (
+        "import python_ta\n"
+        "STRICT = False\n"
+        "python_ta.check_all(config={'a': 1}, load_default_config=STRICT)\n"
+    )
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.load_default_config is None
+    assert any("load_default_config" in w for w in result.warnings)
+
+
+def test_a_non_bool_load_default_config_is_ignored_with_a_warning() -> None:
+    source = "import python_ta\npython_ta.check_all(load_default_config=0)\n"
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.load_default_config is None
+    assert any("load_default_config" in w for w in result.warnings)

@@ -132,3 +132,66 @@ def test_synthesized_syntax_error_columns_are_character_offsets() -> None:
         [_ACCENTED],
     )
     assert d.range.start.character == 25
+
+
+# Every line is BMP-only, so a character index and a UTF-16 unit index agree and
+# each expected value can be read straight off the source text.
+_COLUMN_SOURCE = (
+    '"""Doc."""\n'
+    'NAME = "café"   \n'
+    'LABEL = "café"  # TODO: fix this\n'
+    'PATTERN = "café \\d"\n'
+    'UNI = "café"; DATA = b"x \\u0041"\n'
+    'MIXED = "café"; COUNT: int = "many"\n'
+)
+
+
+def test_odd_column_conventions_land_where_the_source_says(tmp_path) -> None:
+    # C0303 counts the stripped line, W0511 counts tokenize columns and
+    # W1401/W1402 count into the string body. Those four are characters, so
+    # decoding them as UTF-8 byte offsets drags the squiggle one column left for
+    # every non-ASCII character earlier on the line. E9952 comes from mypy, whose
+    # start column is a byte offset but a 1-based one, so it lands one right.
+    from pyta_lsp.runner import run_check
+
+    path = tmp_path / "columns.py"
+    path.write_text(_COLUMN_SOURCE, encoding="utf-8")
+    lines = _COLUMN_SOURCE.splitlines(keepends=True)
+    expected = {
+        "C0303": (2, len('NAME = "café"')),
+        # pylint reports fixme one column past the "#" of the comment token.
+        "W0511": (3, lines[2].index("#") + 1),
+        "W1401": (4, lines[3].index("\\")),
+        "W1402": (5, lines[4].index("\\")),
+        "E9952": (6, lines[5].index('"many"')),
+    }
+
+    result = run_check(path)
+
+    assert result["ok"] is True, result["error"]
+    seen = {
+        msg["msg_id"]: to_diagnostic(msg, lines).range.start
+        for msg in result["messages"]
+        if msg["msg_id"] in expected
+    }
+    assert set(seen) == set(expected), f"the fixture did not produce every code: {sorted(seen)}"
+    for code, (line, character) in expected.items():
+        assert seen[code] == types.Position(line - 1, character), f"{code} landed at {seen[code]}"
+
+
+def test_a_mypy_end_column_is_not_shifted_with_its_start(tmp_path) -> None:
+    # mypy's end column is 1-based inclusive, which is already the 0-based
+    # exclusive offset every other code uses. Shifting it along with the start
+    # would cut the last character off the squiggle.
+    from pyta_lsp.runner import run_check
+
+    path = tmp_path / "columns.py"
+    path.write_text(_COLUMN_SOURCE, encoding="utf-8")
+    lines = _COLUMN_SOURCE.splitlines(keepends=True)
+
+    result = run_check(path)
+
+    assert result["ok"] is True, result["error"]
+    msg = next(m for m in result["messages"] if m["msg_id"] == "E9952")
+    end = to_diagnostic(msg, lines).range.end
+    assert end == types.Position(5, lines[5].index('"many"') + len('"many"'))
