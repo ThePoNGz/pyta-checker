@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
@@ -93,24 +95,38 @@ class PytaLanguageServer(LanguageServer):
         if doc.language_id not in (None, "python"):
             return
         self.notify_status(uri, "checking")
-        argv = [sys.executable, "-m", "pyta_lsp.runner", path]
-        if self.settings.config_path:
-            argv += ["--config", self.settings.config_path]
-            root = select_workspace_root(self.workspace_folders, path)
-            if root:
-                argv += ["--workspace-root", root]
-        result = self.scheduler.run(uri, argv, os.path.dirname(path))
+        source_dir = os.path.dirname(path)
+        try:
+            source: str | None = doc.source
+            lines: list[str] | None = doc.lines
+        except (OSError, UnicodeDecodeError) as exc:
+            source, lines = None, None
+            self.log_to_client(
+                f"Could not read {path} for positions: {exc}", types.MessageType.Warning
+            )
+        staging = tempfile.mkdtemp(prefix="pyta-lsp-") if source is not None else None
+        try:
+            target = path
+            if staging is not None and source is not None:
+                # PythonTA reads the path it is given as UTF-8, and the editor buffer
+                # can differ from disk, so check a UTF-8 copy of what the user sees.
+                target = os.path.join(staging, os.path.basename(path))
+                with open(target, "w", encoding="utf-8", newline="") as handle:
+                    handle.write(source)
+            argv = [sys.executable, "-m", "pyta_lsp.runner", target, "--source-dir", source_dir]
+            if self.settings.config_path:
+                argv += ["--config", self.settings.config_path]
+                root = select_workspace_root(self.workspace_folders, path)
+                if root:
+                    argv += ["--workspace-root", root]
+            result = self.scheduler.run(uri, argv, source_dir)
+        finally:
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
         if result is None:
             return
         generation = result.pop(GENERATION_KEY)
         if result.get("ok"):
-            try:
-                lines = doc.lines
-            except (OSError, UnicodeDecodeError) as exc:
-                lines = None
-                self.log_to_client(
-                    f"Could not read {path} for positions: {exc}", types.MessageType.Warning
-                )
             diagnostics = [to_diagnostic(m, lines) for m in result.get("messages", [])]
             for warning in result.get("warnings", []):
                 self.log_to_client(f"{path}: {warning}", types.MessageType.Warning)

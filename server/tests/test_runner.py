@@ -160,9 +160,9 @@ def test_pyta_precheck_failure_is_reported_as_error(fixtures: Path) -> None:
     assert "[ERROR]" in result["log"]
 
 
-def _run_cli(cwd: Path, target: str) -> subprocess.CompletedProcess:
+def _run_cli(cwd: Path, target: str, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        [sys.executable, "-m", "pyta_lsp.runner", target],
+        [sys.executable, "-m", "pyta_lsp.runner", target, *args],
         capture_output=True,
         text=True,
         env={**os.environ, "PYTHONIOENCODING": "utf-8"},
@@ -228,3 +228,44 @@ def test_non_utf8_coding_cookie_is_decoded_for_parsing(tmp_path: Path) -> None:
 
     data = json.loads(proc.stdout)
     assert [m["msg_id"] for m in data["messages"]] == ["E0001"]
+
+
+def _staged_pair(tmp_path: Path) -> tuple[Path, Path]:
+    """A file staged outside its own folder, with a sibling module left behind."""
+    work = tmp_path / "work"
+    work.mkdir()
+    (work / "helper.py").write_text('"""Helper."""\n\n\ndef hi() -> int:\n    """Doc."""\n    return 1\n', encoding="utf-8")
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    target = staged / "a1.py"
+    target.write_text('"""Doc."""\nimport helper\n\nX = helper.hi()\n', encoding="utf-8")
+    return target, work
+
+
+def test_source_dir_keeps_sibling_imports_resolvable_for_a_staged_copy(tmp_path: Path) -> None:
+    # The server checks a UTF-8 copy of the editor buffer, which cannot live beside
+    # the original, so imports have to resolve against the original folder. Run
+    # through the CLI: astroid caches a failed module lookup for the life of the
+    # process, and each real check is its own process.
+    target, work = _staged_pair(tmp_path)
+
+    without = json.loads(_run_cli(tmp_path, str(target)).stdout)
+    with_dir = json.loads(_run_cli(tmp_path, str(target), "--source-dir", str(work)).stdout)
+
+    assert "E0401" in _codes(without)
+    assert "E0401" not in _codes(with_dir)
+
+
+def test_source_dir_resolves_an_embedded_relative_config(tmp_path: Path) -> None:
+    target, work = _staged_pair(tmp_path)
+    (work / "course.txt").write_text("[FORMAT]\nmax-line-length=100\n", encoding="utf-8")
+    target.write_text(
+        '"""Doc."""\nX = 1\n\nif __name__ == "__main__":\n'
+        '    import python_ta\n    python_ta.check_all(config="course.txt")\n',
+        encoding="utf-8",
+    )
+
+    result = run_check(target, source_dir=str(work))
+
+    assert result["config_source"] == "embedded"
+    assert result["ok"] is True, result["error"]
