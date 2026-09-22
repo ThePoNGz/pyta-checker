@@ -2,6 +2,7 @@
 .vscode-test/**
 .vscode-test.mjs
 .github/**
+.superpowers/**
 src/**
 server/**
 scripts/**
@@ -22,4 +23,5 @@ eslint.config.mjs
 .gitignore
 .gitattributes
 .editorconfig
+package-lock.json
 *.vsix

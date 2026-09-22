@@ -1,0 +1,47 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Check tag matches package.json version
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$expected" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} does not match package.json version ${expected}"; exit 1
+          fi
+      - run: npm ci
+      - run: python scripts/bundle.py build
+      - run: npm run build:prod
+      - run: npx @vscode/vsce package --no-dependencies -o "pyta-checker-${GITHUB_REF_NAME}.vsix"
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" pyta-checker-*.vsix --generate-notes
+      - name: Publish to Marketplace (trusted publishing)
+        if: vars.VSCE_USE_OIDC == 'true'
+        run: npx @vscode/vsce publish --oidc --no-dependencies --packagePath pyta-checker-*.vsix --skip-duplicate
+      - name: Publish to Marketplace (personal access token)
+        if: vars.VSCE_USE_OIDC != 'true' && env.VSCE_PAT != ''
+        run: npx @vscode/vsce publish --no-dependencies --packagePath pyta-checker-*.vsix --skip-duplicate
+      - name: Marketplace publish skipped
+        if: vars.VSCE_USE_OIDC != 'true' && env.VSCE_PAT == ''
+        run: echo "No VSCE_PAT secret and VSCE_USE_OIDC is not 'true'; VSIX is attached to the GitHub release only."
