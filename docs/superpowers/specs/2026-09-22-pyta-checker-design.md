@@ -88,11 +88,13 @@ Invocation: `python -m pyta_lsp.runner <path> [--config <path>] [--errors-only] 
   "ok": true,
   "config_source": "embedded" | "file" | "default",
   "messages": [ ...pyta JSON messages for this file, unchanged... ],
+  "log": "<everything pyta printed to stdout/stderr during the check>",
+  "warnings": [ "<non-fatal notes, e.g. config argument was not a literal>" ],
   "error": null
 }
 ```
 
-On failure: `{"ok": false, "config_source": ..., "messages": [], "error": "<one-line reason>", "traceback": "<full text>"}`. Exit code is 0 in both cases; a non-zero exit means the runner itself could not start (for example, pyta not importable) and stderr carries the reason.
+On failure: `{"ok": false, "config_source": ..., "messages": [], "log": "...", "warnings": [...], "error": "<one-line reason>", "traceback": "<full text>"}`. Exit code is 0 in both cases; a non-zero exit means the runner itself could not start (for example, pyta not importable) and stderr carries the reason.
 
 Config extraction rules, applied to the file's syntax tree without executing it:
 
@@ -101,7 +103,9 @@ Config extraction rules, applied to the file's syntax tree without executing it:
 3. If the value is not a literal, or evaluation fails, treat it as absent and record a warning in the result.
 4. If the callee was `check_errors`, the runner uses `python_ta.check_errors` instead of `check_all`.
 5. Precedence: embedded config, then `--config` from the command line (which the server derives from the `pythonta.configPath` setting), then pyta defaults. When an embedded dict is used, `load_default_config` stays true, matching how the course runs it.
-6. The runner always sets `'output-format': 'pyta-json'` on top of whatever config it uses. When the config is a path rather than a dict, the runner passes the path through and forces the reporter with `pylint_args=['--output-format=pyta-json']`; if pyta rejects that in practice, the runner reads the file, overlays the key, and writes a temporary config. The implementation plan verifies which of these two works.
+6. The runner always forces the JSON reporter. For a dict config it sets `'output-format': 'pyta-json'` on the dict. For a path config it passes the path through and adds `pylint_args=['--output-format', 'pyta-json']`, two separate arguments, which is what pyta's own CLI does. The single-string form `--output-format=pyta-json` is silently ignored by pyta and must not be used.
+7. Pyta prints progress lines such as `Using config file ...` to stdout during a check and writes the report to the `output` stream. The runner redirects stdout and stderr into a buffer for the duration of the check and returns that text in the result's `log` field, so the runner's own stdout carries only the result JSON.
+8. Pyta emits no JSON at all for a file with a syntax error; it prints an error line instead. The runner parses the file with `ast.parse` before calling pyta (it needs the tree for config extraction anyway). On `SyntaxError` it skips pyta and returns one synthetic message: `msg_id` `E0001`, `symbol` `syntax-error`, `category` `error`, `line` and `column` from the exception (column converted to 0-based), `msg` from the exception text. A missing file returns `ok: false`.
 
 Execution environment:
 
@@ -135,8 +139,8 @@ Pure function from a pyta JSON message to an LSP diagnostic. Tested in isolation
 
 | pyta field | LSP field |
 | --- | --- |
-| `line`, `column` | `range.start` (line minus one; column as given, pyta columns are 0-based) |
-| `end_line`, `end_column` when present | `range.end` (end line minus one, end column as given) |
+| `line`, `column` | `range.start` (line minus one; column as given: pyta columns are 0-based, verified against pylint and pycodestyle messages) |
+| `end_line`, `end_column` when present | `range.end` (end line minus one, end column as given; pyta end columns are exclusive) |
 | `end_line` null | `range.end` = end of the start line (the server passes line lengths from the document text; when unknown, a large column that the client clamps) |
 | `category` = `error` | severity Error |
 | any other category | severity Warning |
