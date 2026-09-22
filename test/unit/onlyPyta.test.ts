@@ -46,6 +46,17 @@ describe('applyOnlyPyta', () => {
     expect(context.globalState.get(SAVED_KEY)).toEqual({ basedpyright: ['src/generated'] });
   });
 
+  it('leaves a setting alone when it no longer holds our sentinel', async () => {
+    const context = fakeContext();
+    await applyOnlyPyta(true, context, log);
+
+    // whatever the snapshot still claims, the value on disk is the user's now
+    state.values['python.analysis.ignore'] = ['mine'];
+    await applyOnlyPyta(false, context, log);
+
+    expect(state.values['python.analysis.ignore']).toEqual(['mine']);
+  });
+
   it('does not claim a setting whose enable write was refused', async () => {
     // basedpyright is not installed, so our ignore-all never lands on it. Recording
     // it anyway means a later disable "restores" a setting we never touched.
