@@ -131,4 +131,26 @@ describe('applyOnlyPyta', () => {
     expect(state.values['basedpyright.analysis.ignore']).toEqual(['src/generated']);
     expect(state.values['python.analysis.ignore']).toBeUndefined();
   });
+
+  it('still restarts the other servers when the snapshot cannot be written', async () => {
+    state.commands = ['python.analysis.restartLanguageServer', 'basedpyright.restartserver'];
+    const store = new Map<string, unknown>();
+    let calls = 0;
+    const context = {
+      globalState: {
+        get: (key: string) => store.get(key),
+        update: async (key: string, value: unknown) => {
+          calls += 1;
+          if (calls > 1) {
+            throw new Error('storage is unavailable');
+          }
+          store.set(key, value);
+        },
+      },
+    } as unknown as Context;
+
+    await applyOnlyPyta(true, context, log);
+
+    expect(state.ran).toContain('basedpyright.restartserver');
+  });
 });

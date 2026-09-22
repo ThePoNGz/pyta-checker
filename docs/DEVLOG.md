@@ -290,13 +290,16 @@ After the audit above, the branch was run through Greptile's CLI: `greptile revi
 
 It was deliberately given no `--instructions`. Telling it what the branch was supposed to fix would have invited it to grade the fixes against their own description rather than against the code.
 
-It returned two findings. Both were real, both were P1, and neither overlapped with the nine already found — both sat in code this branch had just written.
+It was run as a loop: review, fix, review again, until two consecutive passes returned no comments. That took six passes and produced five findings. All five were real, all were P1, and none overlapped with the nine found by the audit — every one sat in code this branch had just written, including code written to fix an earlier pass.
 
 | Finding | What it means | Status |
 | --- | --- | --- |
 | `taskkill`'s exit status ignored | The Windows tree-kill reported success even when it had failed, skipping the fallback. | **fixed** |
 | A refused restore still dropped the snapshot | Uninstalling basedpyright could make a user's original setting unrecoverable. | **fixed** |
-| A retained snapshot went stale (second pass) | After a half-landed restore, a later toggle wrote an old value over a change the user had made since. | **fixed** |
+| A retained snapshot went stale (pass 2) | After a half-landed restore, a later toggle wrote an old value over a change the user had made since. | **fixed** |
+| A refused *enable* write still claimed the setting (pass 3) | Installing the missing extension and configuring it, then disabling, deleted the new value. | **fixed** |
+| Reconciliation could fail after writes landed (pass 4) | Judged already harmless once the sentinel guard was in; the real consequence was fixed instead. | declined, see below |
+| An edit made while Only-PythonTA was on was lost (pass 5) | A window reload re-asserted the sentinel over the edit and disabling handed back the older value. | **fixed** |
 
 **The ignored exit status.** `subprocess.run` does not raise on a non-zero exit unless `check=True` is passed, and it was not. The code returned unconditionally after calling `taskkill`, so a failed kill counted as a successful one and the `proc.kill()` fallback never ran — leaving the runner and its mypy descendants alive, which is the exact leak the tree-kill was added to close. It now returns only on exit code 0 and otherwise falls through to `proc.kill()`.
 
@@ -304,10 +307,20 @@ It returned two findings. Both were real, both were P1, and neither overlapped w
 
 **This one forced the test coverage.** The note at the end of section 10 said `src/onlyPyta.ts` could not be tested without a mocked `vscode` module. Fixing a data-loss bug in that file blind was not acceptable, so the mock now exists: `test/unit/vscodeStub.ts` provides `workspace.getConfiguration` with settable values and settable per-key rejections, and `vitest.config.mts` aliases `vscode` to it. The regression test walks the full sequence above and asserts the snapshot survives; a second test asserts the snapshot is still dropped when every write lands, so the fix cannot degrade into never cleaning up. Both were watched failing first.
 
-**The second pass, and why the loop matters.** Re-running the review on the fixed branch produced a third finding, caused by the second fix. Keeping the whole snapshot when *any* restore write failed meant keeping entries that had already been restored successfully. Those entries were then stale: once a setting is handed back, the user is free to change it, and the next enable/disable cycle would write the old snapshotted value over their change.
+**Four passes in the same small file.** Passes 2 through 5 all landed on `src/onlyPyta.ts` and `src/onlyPytaLogic.ts`, and each fix moved the bug rather than removing it.
 
-The underlying mistake was treating the snapshot as one all-or-nothing record when it is really a per-setting debt. The model is now explicit: **a section present in the snapshot is one we have overwritten and still owe back.** A restore that lands deletes that section from the snapshot; a refused one leaves it. `planEnable` fills in only the sections the snapshot does not already cover, so a half-restored state picks up the user's current value for the half it no longer owns, and `planDisable` writes only sections the snapshot actually covers, so it can no longer delete a setting it was never holding. When nothing is left owed, the snapshot is dropped.
+- Pass 2: keeping the whole snapshot when *any* restore failed also kept entries that had already been restored. Those are the user's again, so a later toggle wrote a stale value over a change they had made since.
+- Pass 3: the mirror image on the enable side. The snapshot was saved in full before any write was attempted, so a write refused because the extension was not installed still recorded a claim on a setting we never touched. Install that extension, configure it, disable Only-PythonTA, and the claim deleted the new value.
+- Pass 5: `planEnable` kept whatever the snapshot already held, so an edit made while the sentinel was in place was overwritten on the next enable — a window reload is enough — and disabling later handed back the value from before the edit.
 
-This is the argument for running the review again after fixing rather than once. Three of the fixes on this branch were in the same small file, and each one moved the bug rather than removing it, until the model underneath was named properly.
+The bookkeeping got steadily more careful and the bug kept surviving, because it was all reasoning about *the past*: what we wrote, what landed, what we think we own. The fix that actually ended it reasons about the present instead.
+
+**The guard that closed the class.** `planDisable` now reads the value on disk and restores a setting only while it still holds our `["**"]` sentinel. A section holding anything else was either never overwritten by us or has been changed since, so it is left alone whatever the snapshot claims. That single check makes every stale-bookkeeping path harmless at once: a refused write leaves a real value in place, so it is skipped; a user edit leaves a real value in place, so it is skipped; a snapshot that over-claims cannot act on the claim.
+
+The per-setting debt model is still there underneath, and still correct — **a section present in the snapshot is one we have overwritten and still owe back**, a landed restore discharges it, a refused one keeps it, and `planEnable` re-records any real value it finds on disk. But it is now the bookkeeping, not the safety. The safety is the guard.
+
+**What was declined.** Pass 4 reported that if the final `globalState` write rejects, the optimistic snapshot saved before the writes stays behind and can claim a setting whose write failed. That is accurate about the snapshot and wrong about the consequence: with the sentinel guard, a claim on a setting that does not hold `["**"]` is never acted on. The review was reasoning about snapshot contents in isolation. What *was* real in that path is that the rejection propagated and skipped the language-server restarts, leaving stale problems on screen until a reload — so the snapshot write is now logged rather than fatal, which is the part worth fixing.
+
+**This is the argument for the loop over a single pass.** Three of the five findings only existed because of a fix made in response to an earlier one. A single review would have found the first two and left a codebase that was, by the end of the loop, demonstrably still losing user settings in three other ways.
 
 **What it did not find.** Nothing in the byte/character column mapping, the generation guard, the import-shadowing fix, or the coding-cookie change — the four most intricate fixes on the branch. It also did not surface the items left open in sections 8 and 10, which is expected: those are design limits rather than defects in the diff it was shown.
