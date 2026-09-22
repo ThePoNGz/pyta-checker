@@ -753,3 +753,32 @@ def test_matches_disk_ignores_the_editor_s_line_ending_normalisation(tmp_path) -
 
     assert matches_disk(str(path), '"""Doc."""\nX = 1\n\nY = 2\n')
     assert not matches_disk(str(path), '"""Doc."""\nX = 2\n\nY = 2\n')
+
+
+def test_a_failure_after_the_checking_status_still_ends_the_check(tmp_path) -> None:
+    # mkdtemp, the staged write and Popen can all fail. Returning from any of them
+    # leaves no diagnostics and no terminal status, so the status bar spins for
+    # the rest of the session and the file never shows a result again.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    path = tmp_path / "a1.py"
+    path.write_bytes(b'"""Doc."""\nX = 1\n')
+    ls = _bare_server(tmp_path)
+    statuses: list = []
+    published: list = []
+    ls.notify_status = lambda uri, state, count=None: statuses.append(state)  # type: ignore[method-assign]
+    ls.text_document_publish_diagnostics = lambda params: published.append(params.diagnostics)  # type: ignore[method-assign]
+    ls.log_to_client = lambda *args, **kwargs: None  # type: ignore[method-assign]
+
+    def boom(*args, **kwargs):
+        raise OSError("no space left on device")
+
+    ls.scheduler.run = boom  # type: ignore[method-assign]
+    try:
+        ls.check(path.as_uri())
+    finally:
+        ls.stop_checks()
+
+    assert statuses == ["checking", "done"], statuses
+    assert [d.code for d in published[0]] == [FAILURE_CODE]
+    assert "no space left on device" in published[0][0].message

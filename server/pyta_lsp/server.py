@@ -191,6 +191,21 @@ class PytaLanguageServer(LanguageServer):
         if doc.language_id not in (None, "python"):
             return
         self.notify_status(uri, "checking")
+        try:
+            self._check(uri, path, doc)
+        except Exception as exc:
+            # Staging and the spawn can both fail. Returning from one of them left
+            # no diagnostics and no terminal status, so the status bar spun for the
+            # rest of the session.
+            log.exception("PythonTA check failed for %s", uri)
+            reason = str(exc) or type(exc).__name__
+            self.log_to_client(f"PythonTA could not check {path}: {reason}", types.MessageType.Error)
+            self.text_document_publish_diagnostics(
+                types.PublishDiagnosticsParams(uri=uri, diagnostics=[failure_diagnostic(reason)])
+            )
+            self.notify_status(uri, "done", 1)
+
+    def _check(self, uri: str, path: str, doc: Any) -> None:
         source_dir = os.path.dirname(path)
         try:
             source: str | None = doc.source
