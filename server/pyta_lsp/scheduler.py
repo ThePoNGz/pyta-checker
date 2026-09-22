@@ -52,13 +52,14 @@ def _kill(proc: subprocess.Popen) -> None:
         return
     if sys.platform == "win32":
         try:
-            subprocess.run(
+            completed = subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 capture_output=True,
                 creationflags=subprocess.CREATE_NO_WINDOW,
                 timeout=15,
             )
-            return
+            if completed.returncode == 0:
+                return
         except (OSError, subprocess.SubprocessError):
             pass
     else:
