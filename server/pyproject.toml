@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pyta-lsp"
+version = "0.1.0"
+description = "Language server for PythonTA that honors the check_all(config=...) block embedded in course files"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "pygls>=2.1,<3",
+    "python-ta==2.13.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=1.0",
+    "pytest-lsp>=1.0.1",
+]
+
+[project.scripts]
+pyta-lsp = "pyta_lsp.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pyta_lsp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

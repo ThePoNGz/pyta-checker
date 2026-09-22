@@ -1,0 +1,21 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+server/dist/
+.pytest_cache/
+# Node
+node_modules/
+out/
+*.vsix
+.vscode-test/
+# Bundle output (built by scripts/bundle.py)
+bundled/libs/
+# Editors / OS
+.DS_Store
+Thumbs.db
+.superpowers/
+.venv-bare/
