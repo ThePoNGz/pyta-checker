@@ -283,4 +283,24 @@ Passing tests and working hands-on turned out not to mean safe to ship. Every fi
 ### Two things worth remembering
 
 - **`bundled/libs/pyta_lsp` is a build artifact, not the source.** The VSIX ships that copy, so a server fix does nothing until `python scripts/bundle.py build` runs. A verification run was briefly fooled by the stale copy before this was noticed.
-- **`src/onlyPyta.ts` still has no test coverage.** Only the pure planners in `onlyPytaLogic.ts` are tested. The ordering fix there is verified by reading, not by a test, because exercising it needs a mocked `vscode` module.
+- **`src/onlyPyta.ts` had no test coverage at this point.** Only the pure planners in `onlyPytaLogic.ts` were tested, so the ordering fix there was verified by reading rather than by a test. Section 11 closes this.
+## 11. Greptile review (2026-09-22)
+
+After the audit above, the branch was run through Greptile's CLI: `greptile review --branch main --agent`. Worth recording that this reviews the committed diff from the merge base through HEAD — it does not need a pull request, which contradicts the earlier assumption that Greptile was PR-only. That assumption came from the MCP tool, whose `trigger_code_review` does require a `prNumber`; the CLI does not.
+
+It was deliberately given no `--instructions`. Telling it what the branch was supposed to fix would have invited it to grade the fixes against their own description rather than against the code.
+
+It returned two findings. Both were real, both were P1, and neither overlapped with the nine already found — both sat in code this branch had just written.
+
+| Finding | What it means | Status |
+| --- | --- | --- |
+| `taskkill`'s exit status ignored | The Windows tree-kill reported success even when it had failed, skipping the fallback. | **fixed** |
+| A refused restore still dropped the snapshot | Uninstalling basedpyright could make a user's original setting unrecoverable. | **fixed** |
+
+**The ignored exit status.** `subprocess.run` does not raise on a non-zero exit unless `check=True` is passed, and it was not. The code returned unconditionally after calling `taskkill`, so a failed kill counted as a successful one and the `proc.kill()` fallback never ran — leaving the runner and its mypy descendants alive, which is the exact leak the tree-kill was added to close. It now returns only on exit code 0 and otherwise falls through to `proc.kill()`.
+
+**The refused restore.** The fix in section 10 stopped deleting the snapshot when a restore write failed, but treated "that extension isn't installed" as a benign skip rather than as a failure. It is not benign. The sequence: a student has a real `basedpyright.analysis.ignore` value; they turn Only-PythonTA on, so the snapshot is saved and `["**"]` is written into settings.json; they uninstall basedpyright; they turn Only-PythonTA off. The restore is refused because the setting is no longer registered — but the `["**"]` already written is still sitting in settings.json, because uninstalling an extension does not remove its entries. The snapshot, the only record of the original value, was then deleted. Reinstalling basedpyright would bring `["**"]` back into effect with nothing left to restore from. Every refused write now counts as a failed restore; the reason only decides which log line is written.
+
+**This one forced the test coverage.** The note at the end of section 10 said `src/onlyPyta.ts` could not be tested without a mocked `vscode` module. Fixing a data-loss bug in that file blind was not acceptable, so the mock now exists: `test/unit/vscodeStub.ts` provides `workspace.getConfiguration` with settable values and settable per-key rejections, and `vitest.config.mts` aliases `vscode` to it. The regression test walks the full sequence above and asserts the snapshot survives; a second test asserts the snapshot is still dropped when every write lands, so the fix cannot degrade into never cleaning up. Both were watched failing first.
+
+**What it did not find.** Nothing in the byte/character column mapping, the generation guard, the import-shadowing fix, or the coding-cookie change — the four most intricate fixes on the branch. It also did not surface the items left open in sections 8 and 10, which is expected: those are design limits rather than defects in the diff it was shown.
