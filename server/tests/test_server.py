@@ -782,3 +782,29 @@ def test_a_failure_after_the_checking_status_still_ends_the_check(tmp_path) -> N
     assert statuses == ["checking", "done"], statuses
     assert [d.code for d in published[0]] == [FAILURE_CODE]
     assert "no space left on device" in published[0][0].message
+
+
+async def test_a_form_feed_does_not_shift_every_later_column(
+    client: LanguageClient, tmp_path
+) -> None:
+    # doc.lines is str.splitlines, which counts \x0c as a line break. The tokenizer
+    # does not, so every message after one is mapped against the wrong line and its
+    # column collapses to that line's length.
+    source = '"""Doc."""\n# note\x0cmore\nNAME = 1\n\nOTHER = NAME+1\nprint(OTHER)\n'
+    path = tmp_path / "a1.py"
+    path.write_text(source, encoding="utf-8")
+    uri = path.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri, language_id="python", version=1, text=source
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    pep8 = [d for d in client.diagnostics[uri] if d.code == "E9989"]
+    assert pep8, [d.code for d in client.diagnostics[uri]]
+    assert pep8[0].range.start.line == 4
+    assert pep8[0].range.start.character == len("OTHER = NAME")

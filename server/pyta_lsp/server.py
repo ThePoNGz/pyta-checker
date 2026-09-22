@@ -18,7 +18,7 @@ from pygls import uris
 from pygls.lsp.server import LanguageServer
 
 from . import __version__
-from .diagnostics import config_diagnostic, failure_diagnostic, to_diagnostic
+from .diagnostics import config_diagnostic, failure_diagnostic, split_lines, to_diagnostic
 from .scheduler import GENERATION_KEY, CheckScheduler
 
 log = logging.getLogger("pyta_lsp")
@@ -208,8 +208,10 @@ class PytaLanguageServer(LanguageServer):
     def _check(self, uri: str, path: str, doc: Any) -> None:
         source_dir = os.path.dirname(path)
         try:
+            # One read: doc.source can hit the disk, and a didChange between two
+            # reads would map this run's messages onto a different text.
             source: str | None = doc.source
-            lines: list[str] | None = doc.lines
+            lines: list[str] | None = split_lines(source)
         except (OSError, UnicodeDecodeError) as exc:
             source, lines = None, None
             self.log_to_client(

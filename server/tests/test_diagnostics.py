@@ -216,3 +216,16 @@ def test_a_config_file_message_is_an_information_diagnostic_on_line_one() -> Non
     assert "cfg.txt" in diagnostic.message
     assert "line 2" in diagnostic.message
     assert "Unknown option value" in diagnostic.message
+
+
+def test_split_lines_only_breaks_where_python_and_the_editor_do() -> None:
+    # str.splitlines also breaks on \x0c, \x0b, \x1c-\x1e, \x85,   and  .
+    # None of those is a line break to the tokenizer or to the editor, so from the
+    # first one on every message lands on the wrong line.
+    from pyta_lsp.diagnostics import split_lines
+
+    assert split_lines("# note\x0cmore\nX = 1\n") == ["# note\x0cmore\n", "X = 1\n"]
+    assert split_lines("a\r\nb\rc\nd") == ["a\r\n", "b\r", "c\n", "d"]
+    assert split_lines("") == []
+    assert split_lines("one line") == ["one line"]
+    assert split_lines("a\x85b c\n") == ["a\x85b c\n"]
