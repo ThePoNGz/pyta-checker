@@ -33,17 +33,23 @@ function isIgnoreAll(value: unknown): boolean {
 }
 
 /** Our own sentinel is not a user value: record it as absent so disable removes it. */
-function withoutSentinel(current: Snapshot): Snapshot {
-  const cleaned: Snapshot = {};
-  for (const [section, value] of Object.entries(current)) {
-    cleaned[section] = isIgnoreAll(value) ? null : value;
-  }
-  return cleaned;
+function asOriginal(value: unknown): unknown {
+  return value === undefined || isIgnoreAll(value) ? null : value;
 }
 
+/**
+ * A section present in the snapshot is one we have overwritten and still owe back.
+ * Sections already restored are absent, so their current value is the user's own.
+ */
 export function planEnable(current: Snapshot, saved: Snapshot | undefined): { saved: Snapshot; writes: Write[] } {
+  const next: Snapshot = { ...saved };
+  for (const target of TARGETS) {
+    if (!(target.section in next)) {
+      next[target.section] = asOriginal(current[target.section]);
+    }
+  }
   return {
-    saved: saved ?? withoutSentinel(current),
+    saved: next,
     writes: TARGETS.map((t) => ({ section: t.section, key: t.key, value: IGNORE_ALL })),
   };
 }
@@ -52,7 +58,7 @@ export function planDisable(saved: Snapshot | undefined): Write[] {
   if (!saved) {
     return [];
   }
-  return TARGETS.map((t) => {
+  return TARGETS.filter((t) => t.section in saved).map((t) => {
     const previous = saved[t.section];
     return { section: t.section, key: t.key, value: previous === null ? undefined : previous };
   });
