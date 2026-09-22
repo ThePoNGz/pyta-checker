@@ -11,9 +11,11 @@ let client: LanguageClient | undefined;
 let log: vscode.LogOutputChannel;
 let restarting: Promise<void> | undefined;
 let restartPending = false;
+let disposed = false;
 let statusBar: StatusBar;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
+  disposed = false;
   log = vscode.window.createOutputChannel('PythonTA', { log: true });
   statusBar = new StatusBar();
   context.subscriptions.push(statusBar);
@@ -52,12 +54,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 }
 
 export async function deactivate(): Promise<void> {
+  disposed = true;
+  restartPending = false;
+  // A restart in flight may still be waiting on interpreter discovery. Let it
+  // finish and bail out, or it starts a server after deactivation with nothing
+  // left to stop it.
+  try {
+    await restarting;
+  } catch {
+    // restartServer logs its own failures
+  }
   await stopServer();
 }
 
 async function startServer(context: vscode.ExtensionContext): Promise<void> {
   const settings = getSettings();
   const python = await findPython(settings.interpreter, log);
+  if (disposed) {
+    return;
+  }
   if ('error' in python) {
     statusBar.setServerState('error');
     showPythonError(python.error);
@@ -104,6 +119,9 @@ async function stopServer(): Promise<void> {
 }
 
 async function restartServer(context: vscode.ExtensionContext): Promise<void> {
+  if (disposed) {
+    return;
+  }
   if (restarting) {
     restartPending = true;
     return restarting;
@@ -117,7 +135,7 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
   } finally {
     restarting = undefined;
   }
-  if (restartPending) {
+  if (restartPending && !disposed) {
     restartPending = false;
     return restartServer(context);
   }
