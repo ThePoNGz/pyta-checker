@@ -380,3 +380,24 @@ def test_mypy_messages_survive_a_staged_check(tmp_path: Path) -> None:
 
     assert result["ok"] is True, result["error"]
     assert "E9952" in _codes(result), _codes(result)
+
+
+def test_the_runner_stays_in_a_cwd_that_already_holds_the_file(tmp_path: Path, monkeypatch) -> None:
+    # The server spawns a staged check one directory above the copy, so that
+    # nothing of the student's sits in sys.path[0]. mypy only needs a cwd the
+    # file is under, so descending into the copy's own directory would give that
+    # protection away for nothing.
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    target = staged / "a1.py"
+    target.write_text('"""Doc."""\nCOUNT: int = "many"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    visited: list[str] = []
+    real_chdir = os.chdir
+    monkeypatch.setattr(os, "chdir", lambda path: visited.append(str(path)) or real_chdir(path))
+
+    result = run_check(target, source_dir=str(tmp_path))
+
+    assert visited == [os.getcwd()], f"the runner moved to {visited}"
+    assert result["ok"] is True, result["error"]
+    assert "E9952" in _codes(result), _codes(result)

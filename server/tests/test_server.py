@@ -562,15 +562,25 @@ def _bare_server(root):
 
 
 def _captured_spawn(ls) -> list:
+    """Record the spawn, and what the spawn directory held at that moment."""
+    import os
+
     calls: list = []
-    ls.scheduler.run = lambda key, argv, cwd, generation=None: calls.append((argv, cwd)) or None  # type: ignore[method-assign]
+
+    def capture(key, argv, cwd, generation=None):
+        calls.append((argv, cwd, sorted(os.listdir(cwd))))
+        return None
+
+    ls.scheduler.run = capture  # type: ignore[method-assign]
     return calls
 
 
-def test_the_runner_is_spawned_in_the_checked_file_s_own_directory(tmp_path) -> None:
+def test_the_runner_is_spawned_where_no_student_file_can_be_imported(tmp_path) -> None:
     # sys.path[0] for `python -m` is the spawn directory, so on 3.10, where
     # PYTHONSAFEPATH does not exist, the cwd is what a student's string.py rides in
-    # on. The staging directory holds only the copy.
+    # on. With the copy in the spawn directory itself, a file named random.py was
+    # exactly that; it goes one level down, and the spawn directory holds nothing
+    # else.
     import os
 
     path = tmp_path / "a1.py"
@@ -582,12 +592,13 @@ def test_the_runner_is_spawned_in_the_checked_file_s_own_directory(tmp_path) -> 
     finally:
         ls.stop_checks()
 
-    argv, cwd = calls[0]
+    argv, cwd, entries = calls[0]
     target = argv[3]
     assert os.path.dirname(target) != str(tmp_path), "the file was not staged"
-    assert os.path.normcase(cwd) == os.path.normcase(os.path.dirname(target)), (
-        f"spawned in {cwd}, not beside {target}"
-    )
+    assert entries == ["staged"], f"the spawn directory holds {entries}"
+    assert os.path.normcase(os.path.dirname(target)) == os.path.normcase(
+        os.path.join(cwd, "staged")
+    ), f"spawned in {cwd}, which is not the parent of {target}"
 
 
 def test_a_package_module_is_spawned_in_its_own_package_directory(tmp_path) -> None:
@@ -605,7 +616,7 @@ def test_a_package_module_is_spawned_in_its_own_package_directory(tmp_path) -> N
     finally:
         ls.stop_checks()
 
-    argv, cwd = calls[0]
+    argv, cwd, _entries = calls[0]
     assert os.path.normcase(argv[3]) == os.path.normcase(str(module))
     assert os.path.normcase(cwd) == os.path.normcase(os.path.dirname(str(module)))
 
@@ -914,3 +925,39 @@ def test_a_buffer_behind_a_bom_is_left_alone() -> None:
 
     source = "﻿# -*- coding: cp1252 -*-\nX = 1\n"
     assert normalise_coding_cookie(source) == source
+
+
+def test_a_staged_file_named_after_a_stdlib_module_is_not_imported(tmp_path) -> None:
+    # On 3.10 PYTHONSAFEPATH does nothing, so the spawn directory is sys.path[0]
+    # for the runner and for the mypy it starts. A staged copy named random.py
+    # sitting there was imported and executed on every save; the environment here
+    # is the one 3.10 gives us.
+    import os
+    import subprocess
+
+    from pyta_lsp.scheduler import runner_env
+
+    marker = tmp_path / "IMPORTED.txt"
+    source = f'"""Doc."""\nimport pathlib\npathlib.Path(r"{marker}").write_text("ran")\n'
+    path = tmp_path / "random.py"
+    path.write_text(source, encoding="utf-8")
+    ls = _bare_server(tmp_path)
+    outcome: dict = {}
+
+    def spawn_without_safepath(key, argv, cwd, generation=None):
+        env = runner_env()
+        del env["PYTHONSAFEPATH"]  # 3.10 ignores it
+        outcome["proc"] = subprocess.run(
+            argv, capture_output=True, text=True, env=env, cwd=cwd
+        )
+        outcome["listing"] = sorted(os.listdir(cwd))
+        return None
+
+    ls.scheduler.run = spawn_without_safepath  # type: ignore[method-assign]
+    try:
+        ls.check(path.as_uri())
+    finally:
+        ls.stop_checks()
+
+    assert not marker.exists(), f"the staged copy was imported from {outcome['listing']}"
+    assert json.loads(outcome["proc"].stdout)["ok"] is True, outcome["proc"].stdout

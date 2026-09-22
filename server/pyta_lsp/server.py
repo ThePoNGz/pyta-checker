@@ -261,7 +261,12 @@ class PytaLanguageServer(LanguageServer):
             if staging is not None and source is not None:
                 # PythonTA reads the path it is given as UTF-8, and the editor buffer
                 # can differ from disk, so check a UTF-8 copy of what the user sees.
-                target = os.path.join(staging, os.path.basename(path))
+                # The copy goes one level below the spawn directory: that directory
+                # is sys.path[0] on 3.10, and a copy named random.py or string.py
+                # sitting in it is imported before anything can strip it.
+                staged_dir = os.path.join(staging, "staged")
+                os.mkdir(staged_dir)
+                target = os.path.join(staged_dir, os.path.basename(path))
                 with open(target, "w", encoding="utf-8", newline="") as handle:
                     handle.write(normalise_coding_cookie(source))
                 # PythonTA loads config/.pylintrc from beside the file it is given,
@@ -270,10 +275,10 @@ class PytaLanguageServer(LanguageServer):
                 local_config = find_local_config(source_dir)
                 if local_config:
                     try:
-                        os.mkdir(os.path.join(staging, "config"))
+                        os.mkdir(os.path.join(staged_dir, "config"))
                         shutil.copyfile(
                             local_config,
-                            os.path.join(staging, "config", os.path.basename(local_config)),
+                            os.path.join(staged_dir, "config", os.path.basename(local_config)),
                         )
                     except OSError as exc:
                         # Checking against the wrong config is wrong; not checking
@@ -290,9 +295,11 @@ class PytaLanguageServer(LanguageServer):
                 if root:
                     argv += ["--workspace-root", root]
             # On 3.10 PYTHONSAFEPATH does nothing, so sys.path[0] is whatever the
-            # runner is spawned in. The staging directory holds only the copy; for
-            # a package module that has to stay put it is the package directory.
-            result = self.scheduler.run(uri, argv, os.path.dirname(target), generation)
+            # runner is spawned in. For a staged check that is the staging root,
+            # which holds one subdirectory and nothing importable; for a package
+            # module, which has to stay put, it is the package directory.
+            spawn_dir = staging if staging is not None else os.path.dirname(target)
+            result = self.scheduler.run(uri, argv, spawn_dir, generation)
         finally:
             if staging is not None:
                 shutil.rmtree(staging, ignore_errors=True)
