@@ -82,8 +82,13 @@ async function applyOnlyPytaNow(
     }
   }
   // The snapshot is the only record of the user's original values: it holds exactly
-  // the settings we have overwritten and still owe back.
-  await context.globalState.update(SAVED_KEY, Object.keys(owed).length > 0 ? owed : undefined);
+  // the settings we have overwritten and still owe back. A failure here can only
+  // leave it over-claiming, which planDisable filters out, so it is not fatal.
+  try {
+    await context.globalState.update(SAVED_KEY, Object.keys(owed).length > 0 ? owed : undefined);
+  } catch (error) {
+    log.warn(`Could not update the saved ignore snapshot: ${String(error)}`);
+  }
   await restartOtherServers(log);
 }
 
