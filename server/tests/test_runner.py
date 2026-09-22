@@ -158,3 +158,59 @@ def test_pyta_precheck_failure_is_reported_as_error(fixtures: Path) -> None:
     assert result["ok"] is False
     assert "pylint:" in result["error"]
     assert "[ERROR]" in result["log"]
+
+
+def _run_cli(cwd: Path, target: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-m", "pyta_lsp.runner", target],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        cwd=str(cwd),
+    )
+
+
+def test_module_beside_the_file_cannot_shadow_python_ta(tmp_path: Path) -> None:
+    (tmp_path / "python_ta.py").write_text(
+        "import pathlib\n"
+        "pathlib.Path(__file__).with_name('SHADOW_RAN.txt').write_text('ran')\n"
+        "def check_all(*args, **kwargs):\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "a1.py").write_text('"""Doc."""\nx = 1\n', encoding="utf-8")
+
+    _run_cli(tmp_path, "a1.py")
+
+    assert not (tmp_path / "SHADOW_RAN.txt").exists()
+
+
+def test_stdlib_named_module_beside_the_file_does_not_break_checking(tmp_path: Path) -> None:
+    (tmp_path / "queue.py").write_text(
+        '"""A course Queue ADT."""\n\n\nclass Queue:\n    """A FIFO queue."""\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "a1.py").write_text('"""Doc."""\nx = 1\n', encoding="utf-8")
+
+    proc = _run_cli(tmp_path, "a1.py")
+
+    data = json.loads(proc.stdout)
+    assert data["ok"] is True, data["error"]
+
+
+def test_missing_config_file_reports_the_underlying_error(tmp_path: Path) -> None:
+    (tmp_path / "a1.py").write_text(
+        '"""Doc."""\n'
+        "x = 1\n\n"
+        "if __name__ == '__main__':\n"
+        "    import python_ta\n"
+        "    python_ta.check_all(config='no_such_config.txt')\n",
+        encoding="utf-8",
+    )
+
+    proc = _run_cli(tmp_path, "a1.py")
+
+    assert proc.returncode == 0, f"runner died instead of reporting: rc={proc.returncode}"
+    data = json.loads(proc.stdout)
+    assert data["ok"] is False
+    assert "no_such_config.txt" in (data["error"] or "")

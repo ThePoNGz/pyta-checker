@@ -36,6 +36,24 @@ def apply_import_strategy(env: Mapping[str, str] = os.environ, path: list[str] =
     path.append(libs)
 
 
+def strip_cwd_from_path(cwd: str | None = None, path: list[str] = sys.path) -> None:
+    """Drop the entry `python -m` puts at sys.path[0].
+
+    That entry is the directory of the file being checked, so without this a
+    module sitting beside a student's file (python_ta.py, queue.py, random.py)
+    outranks the bundled libs and the standard library.
+    """
+    target = os.path.normcase(os.path.abspath(os.getcwd() if cwd is None else cwd))
+    for entry in [p for p in path if os.path.normcase(os.path.abspath(p)) == target]:
+        path.remove(entry)
+
+
+def _logged_error(log: str) -> str | None:
+    """pyta logs the real cause with logging.error before it calls sys.exit."""
+    lines = [line for line in log.splitlines() if line.startswith("[ERROR]")]
+    return lines[-1][len("[ERROR]"):].strip() if lines else None
+
+
 def _empty_result() -> dict[str, Any]:
     return {
         "ok": True,
@@ -145,7 +163,7 @@ def run_check(
     try:
         os.chdir(file_path.parent)
         if parent_str not in sys.path:
-            sys.path.insert(0, parent_str)
+            sys.path.append(parent_str)
             inserted_path = True
         with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):
             import python_ta
@@ -154,7 +172,7 @@ def run_check(
             result["pyta_location"] = os.path.dirname(python_ta.__file__)
             checker = python_ta.check_errors if errors_only else python_ta.check_all
             checker(str(file_path), config=config, output=report, pylint_args=pylint_args)
-    except Exception as exc:  # pyta and pylint raise many types; report all of them
+    except (Exception, SystemExit) as exc:  # pyta and pylint raise many types, and both call sys.exit()
         result.update(ok=False, error=f"{type(exc).__name__}: {exc}", traceback=traceback.format_exc())
     finally:
         log_handler.flush()
@@ -165,13 +183,14 @@ def run_check(
         os.chdir(old_cwd)
     result["log"] = log.getvalue()
     if not result["ok"]:
+        result["error"] = _logged_error(result["log"]) or result["error"]
         return result
 
     raw = report.getvalue().strip()
     if not raw:
-        error_lines = [line for line in result["log"].splitlines() if line.startswith("[ERROR]")]
-        if error_lines:
-            result.update(ok=False, error=error_lines[-1][len("[ERROR]"):].strip())
+        logged = _logged_error(result["log"])
+        if logged:
+            result.update(ok=False, error=logged)
         return result
     try:
         report_data = json.loads(raw)
@@ -190,6 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-embedded-config", action="store_true")
     parser.add_argument("--workspace-root")
     args = parser.parse_args(argv)
+    strip_cwd_from_path()
     apply_import_strategy()
     result = run_check(
         Path(args.path),
