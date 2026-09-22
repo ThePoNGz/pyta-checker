@@ -74,3 +74,12 @@ def test_absolute_string_config_is_kept() -> None:
     result = extract_config(ast.parse(source), Path("/elsewhere"))
     assert result.kind == "path"
     assert result.value == absolute
+
+
+def test_non_dict_non_string_literal_is_absent_with_warning() -> None:
+    source = "import python_ta\npython_ta.check_all(config=5)\n"
+    result = extract_config(ast.parse(source), Path("."))
+    assert result.kind == "absent"
+    assert result.value is None
+    assert len(result.warnings) == 1
+    assert "neither a dict nor a string" in result.warnings[0]
