@@ -1,11 +1,13 @@
 import * as vscode from 'vscode';
 import {
   TARGETS,
+  isIgnoreAll,
   isUnregisteredSettingError,
   newlyClaimed,
   planDisable,
   planEnable,
   type Snapshot,
+  type Target,
   type Write,
 } from './onlyPytaLogic';
 import { SECTION } from './settings';
@@ -99,14 +101,21 @@ async function applyOnlyPytaNow(
   let writes: Write[];
   let owed: Snapshot;
   let claiming: Set<string>;
+  // A cycle that overwrites nothing owes nothing, so it must leave the snapshot to
+  // whichever window or machine did the writing. Recording "absent" here instead is
+  // what makes a later disable delete the user's value rather than restore it.
+  let records = true;
   if (enabled) {
     const plan = planEnable(current, saved);
+    writes = plan.writes;
+    records = writes.length > 0;
     // Written before the overwrites so a crash mid-loop cannot lose the originals;
     // reconciled against what actually landed once the loop is done.
-    await context.globalState.update(SAVED_KEY, plan.saved);
-    owed = { ...plan.saved };
-    claiming = newlyClaimed(saved, plan.saved);
-    writes = plan.writes;
+    if (records) {
+      await context.globalState.update(SAVED_KEY, plan.saved);
+    }
+    owed = records ? { ...plan.saved } : {};
+    claiming = records ? newlyClaimed(saved, plan.saved) : new Set();
   } else {
     writes = planDisable(saved, current);
     // Anything the snapshot claims but planDisable declined is the user's again.
@@ -140,13 +149,15 @@ async function applyOnlyPytaNow(
   // The snapshot is the only record of the user's original values: it holds exactly
   // the settings we have overwritten and still owe back. A failure here can only
   // leave it over-claiming, which planDisable filters out, so it is not fatal.
-  try {
-    await context.globalState.update(SAVED_KEY, Object.keys(owed).length > 0 ? owed : undefined);
-  } catch (error) {
-    log.warn(`Could not update the saved ignore snapshot: ${String(error)}`);
+  if (records) {
+    try {
+      await context.globalState.update(SAVED_KEY, Object.keys(owed).length > 0 ? owed : undefined);
+    } catch (error) {
+      log.warn(`Could not update the saved ignore snapshot: ${String(error)}`);
+    }
   }
   // A workspace value outranks the user setting whichever way the toggle went.
-  const blocked = scopedOverrides();
+  const blocked = scopedOverrides(enabled);
   if (blocked.length > 0) {
     log.warn(`Only-PythonTA cannot ${enabled ? 'hide' : 'restore'} ${join(blocked)}: a workspace setting outranks the user setting.`);
     // Activation re-applies on every window open, so an unconditional toast here
@@ -164,12 +175,34 @@ async function applyOnlyPytaNow(
   return { landed, failed, blocked };
 }
 
-/** Global writes lose to a workspace value, so the toggle would silently do nothing. */
-function scopedOverrides(): string[] {
-  return TARGETS.filter((target) => {
-    const inspected = vscode.workspace.getConfiguration(target.section).inspect<unknown>(target.key);
-    return inspected?.workspaceValue !== undefined || inspected?.workspaceFolderValue !== undefined;
-  }).map((target) => `${target.section}.${target.key}`);
+/**
+ * Global writes lose to a workspace or folder value, so the toggle can silently do
+ * nothing - but only when the winning value leaves the problems on the wrong side of
+ * what we just asked for. Our sentinel hides everything, so a copy of it in a higher
+ * scope carries an enable and blocks a disable; any other value is the mirror image.
+ */
+function scopedOverrides(enabled: boolean): string[] {
+  return TARGETS.filter((target) =>
+    higherScopeValues(target).some((value) => (enabled ? !isIgnoreAll(value) : isIgnoreAll(value))),
+  ).map((target) => `${target.section}.${target.key}`);
+}
+
+/** A folder's .vscode/settings.json is invisible to an inspect with no resource. */
+function higherScopeValues(target: Target): unknown[] {
+  const found: unknown[] = [];
+  const collect = (resource?: vscode.Uri): void => {
+    const inspected = vscode.workspace.getConfiguration(target.section, resource).inspect<unknown>(target.key);
+    for (const value of [inspected?.workspaceValue, inspected?.workspaceFolderValue]) {
+      if (value !== undefined) {
+        found.push(value);
+      }
+    }
+  };
+  collect();
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    collect(folder.uri);
+  }
+  return found;
 }
 
 function join(names: string[]): string {

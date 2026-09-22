@@ -24,7 +24,7 @@ export function isUnregisteredSettingError(error: unknown): boolean {
   return String(error).includes('not a registered configuration');
 }
 
-function isIgnoreAll(value: unknown): boolean {
+export function isIgnoreAll(value: unknown): boolean {
   return (
     Array.isArray(value) &&
     value.length === IGNORE_ALL.length &&
@@ -71,13 +71,15 @@ export function newlyClaimed(saved: Snapshot | undefined, next: Snapshot): Set<s
  * Restore only settings that still hold our sentinel. A section holding anything
  * else was either never overwritten by us or has been changed since, so the value
  * on disk is the user's and not ours to write over - whatever the snapshot claims.
+ *
+ * A section holding the sentinel with nothing recorded against it is one no window
+ * recorded a value for - a reinstall, or Settings Sync carrying the setting alone.
+ * The sentinel is never a value we owe back, so it comes out and the setting is left
+ * absent.
  */
 export function planDisable(saved: Snapshot | undefined, current: Snapshot): Write[] {
-  if (!saved) {
-    return [];
-  }
-  return TARGETS.filter((t) => t.section in saved && isIgnoreAll(current[t.section])).map((t) => {
-    const previous = saved[t.section];
+  return TARGETS.filter((t) => isIgnoreAll(current[t.section])).map((t) => {
+    const previous = saved?.[t.section] ?? null;
     return { section: t.section, key: t.key, value: previous === null ? undefined : previous };
   });
 }

@@ -7,15 +7,26 @@ import { findPython, onInterpreterChanged } from './python';
 import { getSettings } from './settings';
 import { StatusBar } from './statusBar';
 
+/** The server kills its runner subprocess trees on the way out; a clean shutdown with
+ * checks in flight measures around 9.4s, well past the 2s default. */
+const STOP_TIMEOUT = 15_000;
+/** How long to wait for a client that is mid-restart to reach a state it can be stopped in. */
+const SETTLE_TIMEOUT = 3_000;
+
 let client: LanguageClient | undefined;
 let log: vscode.LogOutputChannel;
 let restarting: Promise<void> | undefined;
 let restartPending = false;
 let disposed = false;
 let statusBar: StatusBar;
+/** Clients that refused to stop; each still owns a Python server process. */
+const unstopped: LanguageClient[] = [];
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   disposed = false;
+  // The setting this snapshot describes is application-scoped and travels with
+  // Settings Sync; without this the machine it lands on restores the wrong value.
+  context.globalState.setKeysForSync([SAVED_KEY]);
   log = vscode.window.createOutputChannel('PythonTA', { log: true });
   statusBar = new StatusBar();
   context.subscriptions.push(statusBar);
@@ -64,7 +75,13 @@ export async function deactivate(): Promise<void> {
   } catch {
     // restartServer logs its own failures
   }
+  // Last chance: a client left behind by a restart outlives the window otherwise.
+  // Taken before the current one is stopped, so a fresh failure is not retried twice.
+  const orphans = unstopped.splice(0);
   await stopServer();
+  for (const orphan of orphans) {
+    await stopClient(orphan);
+  }
 }
 
 async function startServer(context: vscode.ExtensionContext): Promise<void> {
@@ -109,15 +126,63 @@ async function startServer(context: vscode.ExtensionContext): Promise<void> {
 async function stopServer(): Promise<void> {
   const current = client;
   client = undefined;
-  if (current) {
+  if (!current) {
+    return;
+  }
+  if (!(await stopClient(current)) && !unstopped.includes(current)) {
+    // Dropping it here would leave its Python server running with nothing holding it.
+    unstopped.push(current);
+  }
+}
+
+/**
+ * vscode-languageclient refuses to stop a client that is not Running - including while
+ * its own auto-restart after a server crash is in flight. Wait for the state to settle
+ * and try once more before giving up on it.
+ */
+async function stopClient(current: LanguageClient): Promise<boolean> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    // A client whose server never came up owns no process: nothing to stop, nothing
+    // to wait for.
+    if (current.state === State.StartFailed) {
+      return true;
+    }
     try {
-      // The server kills its runner subprocess trees on the way out; a clean shutdown
-      // with checks in flight measures around 9.4s, well past the 2s default.
-      await current.stop(15_000);
+      await current.stop(STOP_TIMEOUT);
+      return true;
     } catch (error) {
       log.warn(`Error stopping PythonTA server: ${String(error)}`);
     }
+    if (attempt === 0) {
+      await settled(current);
+    }
   }
+  log.warn('The PythonTA server could not be stopped.');
+  return false;
+}
+
+/** Resolves once the client has settled - Starting is the state stop() refuses - or the wait runs out. */
+function settled(current: LanguageClient): Promise<void> {
+  if (hasSettled(current.state)) {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(() => finish(), SETTLE_TIMEOUT);
+    const subscription = current.onDidChangeState((event) => {
+      if (hasSettled(event.newState)) {
+        finish();
+      }
+    });
+    function finish(): void {
+      clearTimeout(timer);
+      subscription.dispose();
+      resolve();
+    }
+  });
+}
+
+function hasSettled(state: State): boolean {
+  return state === State.Running || state === State.Stopped || state === State.StartFailed;
 }
 
 async function restartServer(context: vscode.ExtensionContext): Promise<void> {
@@ -135,11 +200,14 @@ async function restartServer(context: vscode.ExtensionContext): Promise<void> {
   try {
     await restarting;
   } finally {
+    // A rejection here must still clear the flags, or the restart requested while
+    // this one was in flight is left queued and the next one runs twice.
     restarting = undefined;
-  }
-  if (restartPending && !disposed) {
+    const pending = restartPending;
     restartPending = false;
-    return restartServer(context);
+    if (pending && !disposed) {
+      await restartServer(context);
+    }
   }
 }
 

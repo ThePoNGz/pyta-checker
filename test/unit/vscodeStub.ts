@@ -6,6 +6,10 @@ export enum ConfigurationTarget {
   WorkspaceFolder = 3,
 }
 
+export interface StubFolder {
+  uri: { toString(): string };
+}
+
 interface StubState {
   /** Global values, keyed "section.key". */
   values: Record<string, unknown>;
@@ -13,7 +17,13 @@ interface StubState {
   rejects: Record<string, string>;
   /** Values set at workspace scope, which outrank anything written globally. */
   scoped: Record<string, unknown>;
+  /** Values set in one folder's .vscode/settings.json, keyed by folder uri then "section.key". */
+  folders: Record<string, Record<string, unknown>>;
+  /** The roots of a multi-root workspace; undefined when no folder is open. */
+  workspaceFolders: StubFolder[] | undefined;
   commands: string[];
+  /** Command callbacks, by id, so a test can invoke what the extension registered. */
+  registered: Record<string, (...args: unknown[]) => unknown>;
   ran: string[];
   warned: string[];
   /** Ids of settings an update() actually changed, in order. */
@@ -24,6 +34,8 @@ interface StubState {
   answer: unknown;
   /** What showErrorMessage resolves to. */
   errorAnswer: unknown;
+  /** What showWarningMessage resolves to. */
+  warnAnswer: unknown;
   /** Runs while showInformationMessage is open, to model a value changing under it. */
   onInfo: (() => void) | undefined;
   /** Runs inside a landed update(), to model the configuration event firing there. */
@@ -34,7 +46,10 @@ export const state: StubState = {
   values: {},
   rejects: {},
   scoped: {},
+  folders: {},
+  workspaceFolders: undefined,
   commands: [],
+  registered: {},
   ran: [],
   warned: [],
   writes: [],
@@ -42,6 +57,7 @@ export const state: StubState = {
   errors: [],
   answer: undefined,
   errorAnswer: undefined,
+  warnAnswer: undefined,
   onInfo: undefined,
   onUpdate: undefined,
 };
@@ -50,7 +66,10 @@ export function resetStub(): void {
   state.values = {};
   state.rejects = {};
   state.scoped = {};
+  state.folders = {};
+  state.workspaceFolders = undefined;
   state.commands = [];
+  state.registered = {};
   state.ran = [];
   state.warned = [];
   state.writes = [];
@@ -58,6 +77,7 @@ export function resetStub(): void {
   state.errors = [];
   state.answer = undefined;
   state.errorAnswer = undefined;
+  state.warnAnswer = undefined;
   state.onInfo = undefined;
   state.onUpdate = undefined;
 }
@@ -66,36 +86,53 @@ function id(section: string, key: string): string {
   return `${section}.${key}`;
 }
 
+function folderValues(resource: { toString(): string } | undefined): Record<string, unknown> | undefined {
+  return resource === undefined ? undefined : state.folders[resource.toString()];
+}
+
 export const workspace = {
+  get workspaceFolders(): StubFolder[] | undefined {
+    return state.workspaceFolders;
+  },
   onDidChangeConfiguration(): Disposable {
     return new Disposable();
   },
-  getConfiguration(section: string) {
+  getConfiguration(section: string, resource?: { toString(): string }) {
+    const folder = folderValues(resource);
     return {
       get<T>(key: string, fallback: T): T {
-        const value = state.values[id(section, key)];
+        // Folder beats workspace beats user, as it does in VS Code.
+        const target = id(section, key);
+        const value = folder?.[target] ?? state.scoped[target] ?? state.values[target];
         return value === undefined ? fallback : (value as T);
       },
       inspect<T>(key: string): { globalValue: T | undefined; workspaceValue: T | undefined; workspaceFolderValue: T | undefined } {
         return {
           globalValue: state.values[id(section, key)] as T | undefined,
           workspaceValue: state.scoped[id(section, key)] as T | undefined,
-          workspaceFolderValue: undefined,
+          // Only an inspect given a resource can see a folder value.
+          workspaceFolderValue: folder?.[id(section, key)] as T | undefined,
         };
       },
-      async update(key: string, value: unknown): Promise<void> {
-        const target = id(section, key);
-        const rejection = state.rejects[target];
+      async update(key: string, value: unknown, target?: ConfigurationTarget): Promise<void> {
+        const settingId = id(section, key);
+        const rejection = state.rejects[settingId];
         if (rejection !== undefined) {
           throw new Error(rejection);
         }
-        state.writes.push(target);
+        state.writes.push(settingId);
+        const bucket =
+          target === ConfigurationTarget.Workspace
+            ? state.scoped
+            : target === ConfigurationTarget.WorkspaceFolder
+              ? (state.folders[resource?.toString() ?? ''] ??= {})
+              : state.values;
         if (value === undefined) {
-          delete state.values[target];
+          delete bucket[settingId];
         } else {
-          state.values[target] = value;
+          bucket[settingId] = value;
         }
-        state.onUpdate?.(target);
+        state.onUpdate?.(settingId);
       },
     };
   },
@@ -108,7 +145,8 @@ export const commands = {
   async executeCommand(command: string): Promise<void> {
     state.ran.push(command);
   },
-  registerCommand(): Disposable {
+  registerCommand(id: string, callback: (...args: unknown[]) => unknown): Disposable {
+    state.registered[id] = callback;
     return new Disposable();
   },
 };
@@ -135,9 +173,9 @@ export const window = {
     state.errors.push(message);
     return state.errorAnswer;
   },
-  async showWarningMessage(message: string): Promise<undefined> {
+  async showWarningMessage(message: string): Promise<unknown> {
     state.warned.push(message);
-    return undefined;
+    return state.warnAnswer;
   },
   createOutputChannel() {
     return {

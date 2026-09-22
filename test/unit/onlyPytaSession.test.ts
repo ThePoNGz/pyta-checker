@@ -198,3 +198,50 @@ describe('toggle off under a workspace override', () => {
     expect(stub.state.warned.join(' ')).toContain('python.analysis.ignore');
   });
 });
+
+describe('a value in a scope that outranks the user setting', () => {
+  // Our global write only matters if it changes the effective value, so what blocks
+  // depends on the direction: the sentinel hides everything, anything else does not.
+  it('does not block an enable with a workspace copy of our sentinel, which hides them too', async () => {
+    stub.state.scoped['python.analysis.ignore'] = IGNORE_ALL;
+
+    const outcome = await onlyPyta.applyOnlyPyta(true, fakeContext(), log);
+
+    expect(outcome.blocked).toEqual([]);
+    expect(stub.state.warned).toEqual([]);
+  });
+
+  it('blocks an enable with any other workspace value, which keeps them visible', async () => {
+    stub.state.scoped['python.analysis.ignore'] = ['src/generated'];
+
+    const outcome = await onlyPyta.applyOnlyPyta(true, fakeContext(), log);
+
+    expect(outcome.blocked).toEqual(['python.analysis.ignore']);
+  });
+
+  it('blocks a disable with a workspace copy of our sentinel, which keeps them hidden', async () => {
+    stub.state.scoped['python.analysis.ignore'] = IGNORE_ALL;
+
+    const outcome = await onlyPyta.applyOnlyPyta(false, fakeContext(), log);
+
+    expect(outcome.blocked).toEqual(['python.analysis.ignore']);
+  });
+
+  it('does not block a disable with any other workspace value, which shows them anyway', async () => {
+    stub.state.scoped['python.analysis.ignore'] = ['src/generated'];
+
+    const outcome = await onlyPyta.applyOnlyPyta(false, fakeContext(), log);
+
+    expect(outcome.blocked).toEqual([]);
+    expect(stub.state.warned).toEqual([]);
+  });
+
+  it('sees a folder value in a multi-root workspace, which a resource-less inspect misses', async () => {
+    stub.state.workspaceFolders = [{ uri: stub.Uri.parse('file:///a') }, { uri: stub.Uri.parse('file:///b') }];
+    stub.state.folders['file:///b'] = { 'basedpyright.analysis.ignore': ['src/generated'] };
+
+    const outcome = await onlyPyta.applyOnlyPyta(true, fakeContext(), log);
+
+    expect(outcome.blocked).toEqual(['basedpyright.analysis.ignore']);
+  });
+});

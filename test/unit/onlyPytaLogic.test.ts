@@ -72,8 +72,14 @@ describe('planDisable', () => {
     ]);
   });
 
-  it('writes nothing when there is no snapshot', () => {
-    expect(planDisable(undefined, { python: IGNORE_ALL, basedpyright: IGNORE_ALL })).toEqual([]);
+  it('removes a sentinel no snapshot accounts for', () => {
+    // A reinstall, or Settings Sync carrying the setting without the snapshot. The
+    // sentinel is never a value we owe back, so it comes out and the setting is left
+    // absent; leaving it would keep the other linters silent with nothing to undo it.
+    expect(planDisable(undefined, { python: IGNORE_ALL, basedpyright: IGNORE_ALL })).toEqual([
+      { section: 'python', key: 'analysis.ignore', value: undefined },
+      { section: 'basedpyright', key: 'analysis.ignore', value: undefined },
+    ]);
   });
 
   it('skips a section that no longer holds our sentinel', () => {
@@ -84,8 +90,9 @@ describe('planDisable', () => {
     ).toEqual([{ section: 'basedpyright', key: 'analysis.ignore', value: ['b'] }]);
   });
 
-  it('leaves alone a section the snapshot does not cover', () => {
+  it('removes a sentinel the snapshot does not cover and restores the one it does', () => {
     expect(planDisable({ basedpyright: ['b'] }, { python: IGNORE_ALL, basedpyright: IGNORE_ALL })).toEqual([
+      { section: 'python', key: 'analysis.ignore', value: undefined },
       { section: 'basedpyright', key: 'analysis.ignore', value: ['b'] },
     ]);
   });

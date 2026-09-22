@@ -38,13 +38,39 @@ export async function findPython(settingPath: string, log: vscode.LogOutputChann
     candidates.push(fromExtension);
   }
   candidates.push(...pathCandidates(process.platform));
-  const result = await selectPython(candidates, defaultProbe);
+  let configured: string | undefined;
+  const result = await selectPython(candidates, defaultProbe, (candidate, reason) => {
+    if (candidate.origin === 'setting' && configured === undefined) {
+      configured = reason;
+    }
+  });
   if ('error' in result) {
     log.error(result.error);
   } else {
     log.info(`Using Python ${formatVersion(result.version)} at ${result.path} (${result.origin})`);
+    if (configured !== undefined) {
+      reportFallback(settingPath, configured, result.path, log);
+    }
   }
   return result;
+}
+
+let warnedFallback = false;
+
+/** Falling back silently leaves the student with results from an interpreter they did not pick. */
+function reportFallback(configuredPath: string, reason: string, used: string, log: vscode.LogOutputChannel): void {
+  const message = `PythonTA: the interpreter set in pythonta.interpreter (${configuredPath}) could not be used (${reason}). Using ${used} instead.`;
+  log.warn(message);
+  // Every restart re-runs discovery, so this is worth saying once a session.
+  if (warnedFallback) {
+    return;
+  }
+  warnedFallback = true;
+  void vscode.window.showWarningMessage(message, 'Show Output').then((choice) => {
+    if (choice) {
+      void vscode.commands.executeCommand('pythonta.showOutput');
+    }
+  });
 }
 
 export async function onInterpreterChanged(
