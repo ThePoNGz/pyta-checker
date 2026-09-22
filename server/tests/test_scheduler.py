@@ -170,3 +170,33 @@ def test_kill_takes_down_grandchildren(tmp_path: Path) -> None:
     assert result["error"].startswith("timed out")
     time.sleep(6)
     assert not marker.exists()
+
+
+def test_kill_falls_back_when_taskkill_reports_failure(monkeypatch) -> None:
+    # taskkill exits nonzero when it cannot reach the tree. subprocess.run does not
+    # raise on that, so returning regardless skipped the fallback and left the
+    # runner alive.
+    import subprocess as sp
+
+    from pyta_lsp import scheduler
+
+    if sys.platform != "win32":
+        import pytest
+
+        pytest.skip("taskkill is the win32 branch")
+
+    killed: list[str] = []
+
+    class FakeProc:
+        pid = 4321
+
+        def poll(self) -> None:
+            return None
+
+        def kill(self) -> None:
+            killed.append("kill")
+
+    monkeypatch.setattr(sp, "run", lambda argv, **kw: sp.CompletedProcess(argv, 1, b"", b"ERROR: not found"))
+    scheduler._kill(FakeProc())
+
+    assert killed == ["kill"]
