@@ -1,15 +1,20 @@
 import * as vscode from 'vscode';
-import type { LanguageClient } from 'vscode-languageclient/node';
+import { State, type LanguageClient } from 'vscode-languageclient/node';
 import { createClient, requestCheck } from './client';
+import { STATUS_NOTIFICATION, type StatusParams } from './client';
 import { findPython, onInterpreterChanged } from './python';
 import { getSettings } from './settings';
+import { StatusBar } from './statusBar';
 
 let client: LanguageClient | undefined;
 let log: vscode.LogOutputChannel;
 let restarting: Promise<void> | undefined;
+let statusBar: StatusBar;
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   log = vscode.window.createOutputChannel('PythonTA', { log: true });
+  statusBar = new StatusBar();
+  context.subscriptions.push(statusBar);
   context.subscriptions.push(
     log,
     vscode.commands.registerCommand('pythonta.showOutput', () => log.show(true)),
@@ -39,15 +44,29 @@ async function startServer(context: vscode.ExtensionContext): Promise<void> {
   const settings = getSettings();
   const python = await findPython(settings.interpreter, log);
   if ('error' in python) {
+    statusBar.setServerState('error');
     showPythonError(python.error);
     return;
   }
   const next = createClient(python.path, context.extensionPath, log);
   client = next;
+  statusBar.setServerState('starting');
+  next.onNotification(STATUS_NOTIFICATION, (params: StatusParams) => statusBar.onStatus(params));
+  next.onDidChangeState((event) => {
+    if (client !== next) {
+      return;
+    }
+    if (event.newState === State.Running) {
+      statusBar.setServerState('running');
+    } else if (event.newState === State.StartFailed || event.newState === State.Stopped) {
+      statusBar.setServerState('error');
+    }
+  });
   try {
     await next.start();
     log.info('PythonTA server started');
   } catch (error) {
+    statusBar.setServerState('error');
     log.error(`PythonTA server failed to start: ${String(error)}`);
     void vscode.window.showErrorMessage('PythonTA server failed to start.', 'Show Output').then((choice) => {
       if (choice) {
