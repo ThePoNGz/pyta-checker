@@ -121,6 +121,7 @@ def run_check(
     errors_only: bool = False,
     use_embedded: bool = True,
     workspace_root: str | None = None,
+    source_dir: str | None = None,
 ) -> dict[str, Any]:
     result = _empty_result()
     file_path = Path(path)
@@ -128,6 +129,9 @@ def run_check(
         result.update(ok=False, error=f"file not found: {file_path}")
         return result
     file_path = file_path.resolve()
+    # The server checks a UTF-8 copy of the editor buffer, which cannot sit beside
+    # the original, so the folder that owns the file is not always its parent.
+    base_dir = Path(source_dir).resolve() if source_dir else file_path.parent
 
     try:
         source = _read_source(file_path)
@@ -142,19 +146,19 @@ def run_check(
         return result
 
     extracted = (
-        extract_config(tree, file_path.parent)
+        extract_config(tree, base_dir)
         if use_embedded
         else ExtractedConfig("absent", None, False)
     )
     result["warnings"].extend(extracted.warnings)
     errors_only = errors_only or extracted.errors_only
-    config, pylint_args, source_kind = _resolve_config(extracted, config_path, workspace_root, file_path.parent)
+    config, pylint_args, source_kind = _resolve_config(extracted, config_path, workspace_root, base_dir)
     result["config_source"] = source_kind
 
     report = io.StringIO()
     log = io.StringIO()
     old_cwd = os.getcwd()
-    parent_str = str(file_path.parent)
+    parent_str = str(base_dir)
     inserted_path = False
     # python_ta's logging.basicConfig only binds a handler on the first call in a
     # process, so a handler attached here directly to the root logger is the only
@@ -169,7 +173,7 @@ def run_check(
     if previous_level == logging.NOTSET or previous_level > logging.INFO:
         root_logger.setLevel(logging.INFO)
     try:
-        os.chdir(file_path.parent)
+        os.chdir(base_dir)
         if parent_str not in sys.path:
             sys.path.append(parent_str)
             inserted_path = True
@@ -216,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--errors-only", action="store_true")
     parser.add_argument("--no-embedded-config", action="store_true")
     parser.add_argument("--workspace-root")
+    parser.add_argument("--source-dir")
     args = parser.parse_args(argv)
     strip_cwd_from_path()
     apply_import_strategy()
@@ -225,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
         errors_only=args.errors_only,
         use_embedded=not args.no_embedded_config,
         workspace_root=args.workspace_root,
+        source_dir=args.source_dir,
     )
     sys.stdout.write(json.dumps(result))
     sys.stdout.flush()

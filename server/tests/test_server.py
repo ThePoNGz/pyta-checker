@@ -186,3 +186,55 @@ def test_automatic_checks_do_not_occupy_a_protocol_worker() -> None:
         release.set()
 
     assert elapsed < 0.5, f"did_open blocked for {elapsed:.1f}s waiting on the check"
+
+
+async def test_open_checks_the_editor_buffer_not_the_file_on_disk(
+    client: LanguageClient, tmp_path
+) -> None:
+    # A window reload restores unsaved edits, so the buffer and the file on disk can
+    # differ. Checking disk while mapping positions onto the buffer puts squiggles on
+    # lines the user never wrote.
+    path = tmp_path / "dirty.py"
+    path.write_text('"""Doc."""\nX = 1\n', encoding="utf-8")
+    uri = path.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri,
+                language_id="python",
+                version=1,
+                text='"""Doc."""\nimport os\n\nX = 1\n',
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    assert "E9999" in {d.code for d in client.diagnostics[uri]}
+
+
+async def test_non_utf8_file_is_checked_through_the_staged_copy(
+    client: LanguageClient, tmp_path
+) -> None:
+    # PythonTA reads the path it is given as UTF-8 and raises on anything else, so a
+    # file carrying a cp1252 coding cookie could be parsed but never checked.
+    # Staging the buffer as UTF-8 makes it checkable.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    text = '# -*- coding: cp1252 -*-\n"""Doc."""\nimport os\n\nNAME = "café"\n'
+    path = tmp_path / "accented.py"
+    path.write_bytes(text.encode("cp1252"))
+    uri = path.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri, language_id="python", version=1, text=text
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in client.diagnostics[uri]}
+    assert FAILURE_CODE not in codes, "PythonTA still could not read the file"
+    assert "E9999" in codes
