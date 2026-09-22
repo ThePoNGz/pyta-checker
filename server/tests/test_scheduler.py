@@ -311,25 +311,38 @@ def _no_kill(monkeypatch) -> None:
     monkeypatch.setattr(sched, "_kill", lambda proc: None)
 
 
-def test_a_superseded_run_does_not_wait_forever_on_a_failed_kill(monkeypatch, tmp_path: Path) -> None:
-    # taskkill can exit nonzero and leave a grandchild holding the pipes. An
-    # untimed communicate() then parks the pool thread and its slot for good.
-    _no_kill(monkeypatch)
-    scheduler = CheckScheduler(timeout=30, max_parallel=1)
-    proc = _StuckProc()
+def test_a_run_superseded_while_it_waits_for_a_slot_never_spawns(tmp_path: Path) -> None:
+    # The slot wait is unbounded, so a queued thread can reach the spawn long
+    # after the document stopped being its own. Starting a runner there and
+    # killing it again relies on a tree kill that can fail; not starting one
+    # cannot.
+    from pyta_lsp.scheduler import default_spawn
 
-    def spawn(argv, cwd):
-        scheduler.cancel("doc")  # a newer request arrives while this one spawns
-        return proc
+    spawned: list[list[str]] = []
 
-    scheduler._spawn = spawn  # type: ignore[assignment]
-    started = time.monotonic()
-    result = scheduler.run("doc", ["runner"], str(tmp_path))
-    elapsed = time.monotonic() - started
+    def counting_spawn(argv: list[str], cwd: str):
+        spawned.append(argv)
+        return default_spawn(argv, cwd)
 
-    assert result is None
-    assert elapsed < 8, f"the superseded branch held its slot for {elapsed:.1f}s"
-    assert proc.stdout.closed and proc.stderr.closed, "the pipes were left open"
+    scheduler = CheckScheduler(spawn=counting_spawn, timeout=30, max_parallel=1)
+    results: dict[str, object] = {}
+
+    def run(key: str, tag: str, delay: float = 0.0) -> None:
+        results[tag] = scheduler.run(key, _echo_argv(tag, delay=delay), str(tmp_path))
+
+    holder = threading.Thread(target=run, args=("other", "holder", 2.0))
+    holder.start()
+    time.sleep(0.5)
+    queued = threading.Thread(target=run, args=("doc", "queued"))
+    queued.start()
+    time.sleep(0.5)
+    scheduler.cancel("doc")  # the document is closed while its check is queued
+    holder.join(20)
+    queued.join(20)
+
+    assert not holder.is_alive() and not queued.is_alive()
+    assert len(spawned) == 1, f"a runner was spawned for a superseded check: {spawned}"
+    assert results["queued"] is None
 
 
 def test_a_timed_out_run_closes_its_pipes_when_the_kill_does_not_take(
@@ -351,3 +364,58 @@ def test_a_timed_out_run_closes_its_pipes_when_the_kill_does_not_take(
 
     assert result is not None and "timed out" in result["error"]
     assert proc.stdout.closed and proc.stderr.closed, "the pipes were left open"
+
+
+class _QuietProc:
+    """A runner that finishes immediately and holds no pipes."""
+
+    pid = 777777
+    returncode = 0
+    stdout = None
+    stderr = None
+
+    def poll(self):
+        return None
+
+    def kill(self) -> None:
+        pass
+
+    def communicate(self, timeout=None):
+        return b'{"ok": true, "messages": []}', b""
+
+
+def test_a_spawned_process_is_always_in_the_cancel_all_snapshot(monkeypatch, tmp_path: Path) -> None:
+    # cancel_all snapshots _procs. While the stopped check, the spawn and the
+    # registration are three separate critical sections, a cancel_all landing
+    # between them snapshots a dict that does not yet hold the process about to
+    # exist: the runner is started after shutdown and only the worker thread is
+    # left to notice.
+    from pyta_lsp import scheduler as sched
+
+    killed: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        sched, "_kill", lambda proc: killed.append((threading.current_thread().name, proc.pid))
+    )
+    proc = _QuietProc()
+    spawning = threading.Event()
+
+    def slow_spawn(argv, cwd):
+        spawning.set()
+        time.sleep(0.3)
+        return proc
+
+    scheduler = CheckScheduler(spawn=slow_spawn, timeout=30, max_parallel=1)
+    worker = threading.Thread(
+        target=scheduler.run, args=("doc", ["runner"], str(tmp_path)), name="check"
+    )
+    worker.start()
+    assert spawning.wait(5), "the spawn never started"
+    canceller = threading.Thread(target=scheduler.cancel_all, name="canceller")
+    canceller.start()
+    canceller.join(10)
+    worker.join(10)
+
+    assert not worker.is_alive() and not canceller.is_alive()
+    assert killed == [("canceller", proc.pid)], (
+        f"the process was not in the snapshot cancel_all took: {killed}"
+    )

@@ -148,24 +148,15 @@ class CheckScheduler:
 
         with self._slots:
             with self._lock:
-                # A thread can wait here for minutes; spawning after cancel_all
-                # would start a runner nothing is left to kill it.
-                if self._stopped:
+                # A thread can wait here for minutes. Spawning after cancel_all,
+                # or after a newer request took this key, starts a runner nothing
+                # is left to kill. The check, the spawn and the registration are
+                # one critical section, so a cancel_all cannot snapshot _procs
+                # between them and miss the process about to exist.
+                if self._stopped or self._generation.get(key) != generation:
                     return None
-            proc = self._spawn(argv, cwd)
-            with self._lock:
-                superseded = self._generation[key] != generation
-                if not superseded:
-                    self._procs[key] = proc
-            if superseded:
-                _kill(proc)
-                try:
-                    proc.communicate(timeout=5)
-                except subprocess.TimeoutExpired:
-                    pass
-                finally:
-                    _close_pipes(proc)
-                return None
+                proc = self._spawn(argv, cwd)
+                self._procs[key] = proc
 
             timed_out = False
             try:
