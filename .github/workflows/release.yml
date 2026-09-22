@@ -12,7 +12,9 @@ jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      # Whether the secret is set, not the secret itself: the steps below need the
+      # answer in their conditions, and a step if: cannot read the secrets context.
+      HAS_VSCE_PAT: ${{ secrets.VSCE_PAT != '' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -40,8 +42,11 @@ jobs:
         if: vars.VSCE_USE_OIDC == 'true'
         run: npx @vscode/vsce publish --oidc --no-dependencies --packagePath pyta-checker-*.vsix --skip-duplicate
       - name: Publish to Marketplace (personal access token)
-        if: vars.VSCE_USE_OIDC != 'true' && env.VSCE_PAT != ''
+        if: vars.VSCE_USE_OIDC != 'true' && env.HAS_VSCE_PAT == 'true'
+        # Scoped to this step so npm ci lifecycle scripts and the build cannot read it.
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: npx @vscode/vsce publish --no-dependencies --packagePath pyta-checker-*.vsix --skip-duplicate
       - name: Marketplace publish skipped
-        if: vars.VSCE_USE_OIDC != 'true' && env.VSCE_PAT == ''
+        if: vars.VSCE_USE_OIDC != 'true' && env.HAS_VSCE_PAT != 'true'
         run: echo "No VSCE_PAT secret and VSCE_USE_OIDC is not 'true'; VSIX is attached to the GitHub release only."
