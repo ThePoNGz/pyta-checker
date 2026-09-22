@@ -102,6 +102,17 @@ class PytaLanguageServer(LanguageServer):
         except Exception:  # a worker thread swallows exceptions silently otherwise
             log.exception("PythonTA check failed for %s", uri)
 
+    def stop_checks(self) -> None:
+        """Release everything holding the process open.
+
+        The check pool's threads are not daemons, so the interpreter joins them on
+        the way out; one parked on a 60-second subprocess wait keeps the whole
+        server alive after the editor has gone. Killing the subprocesses first is
+        what lets those threads return.
+        """
+        self.scheduler.cancel_all()
+        self._checks.shutdown(wait=False, cancel_futures=True)
+
     def notify_status(self, uri: str, state: str, count: int | None = None) -> None:
         self.protocol.notify(STATUS_NOTIFICATION, {"uri": uri, "state": state, "count": count})
 
@@ -206,6 +217,11 @@ def did_open(ls: PytaLanguageServer, params: types.DidOpenTextDocumentParams) ->
 def did_save(ls: PytaLanguageServer, params: types.DidSaveTextDocumentParams) -> None:
     if ls.settings.run_on_save:
         ls.schedule_check(params.text_document.uri)
+
+
+@server.feature(types.SHUTDOWN)
+def on_shutdown(ls: PytaLanguageServer, params: Any = None) -> None:
+    ls.stop_checks()
 
 
 @server.feature(types.TEXT_DOCUMENT_DID_CLOSE)

@@ -160,6 +160,13 @@ class CheckScheduler:
             action()
             return True
 
+    def cancel_all(self) -> None:
+        """Kill every in-flight check so its worker thread stops waiting."""
+        with self._lock:
+            keys = list(self._procs)
+        for key in keys:
+            self.cancel(key)
+
     def cancel(self, key: str) -> None:
         with self._lock:
             self._generation[key] = self._generation.get(key, 0) + 1
