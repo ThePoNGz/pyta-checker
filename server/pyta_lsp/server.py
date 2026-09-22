@@ -115,13 +115,22 @@ def find_local_config(directory: str) -> str | None:
     return None
 
 
+def _one_eol(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def matches_disk(path: str, source: str) -> bool:
-    """Whether the buffer is what a checker reading the file would see."""
+    """Whether the buffer is what a checker reading the file would see.
+
+    Line endings are normalised on both sides: the editor presents a document
+    with one EOL whatever the file holds, so a saved file with mixed endings
+    would otherwise look like an unsaved buffer.
+    """
     try:
         with open(path, "rb") as handle:
             encoding, _ = tokenize.detect_encoding(handle.readline)
         with open(path, "r", encoding=encoding, newline="") as handle:
-            return handle.read() == source
+            return _one_eol(handle.read()) == _one_eol(source)
     except (OSError, UnicodeDecodeError, SyntaxError, LookupError):
         return False
 

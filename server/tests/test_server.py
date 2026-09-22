@@ -707,3 +707,46 @@ def test_a_coding_cookie_is_pointed_at_utf8_without_moving_any_line() -> None:
     # A cookie is only a cookie in the first two lines, and only before real code.
     assert normalise_coding_cookie("X = 1\n# coding: cp1252\n") == "X = 1\n# coding: cp1252\n"
     assert normalise_coding_cookie("# -*- coding: cp1252 -*-\r\nX = 1\r\n").count("\r\n") == 2
+
+
+async def test_a_saved_package_module_with_mixed_line_endings_is_still_checked(
+    client: LanguageClient, tmp_path
+) -> None:
+    # The editor normalises a document to one EOL, so a file whose bytes mix \r\n
+    # and \n never equals the buffer byte for byte even when it is saved. A package
+    # module cannot be staged, so that comparison is what decides between real
+    # diagnostics and "save the file first".
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    package = tmp_path / "mypkg"
+    package.mkdir()
+    (package / "__init__.py").write_bytes(b"")
+    module = package / "mod.py"
+    module.write_bytes(b'"""Doc."""\r\nimport os\n\r\nX = 1\n')
+    uri = module.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri,
+                language_id="python",
+                version=1,
+                text='"""Doc."""\nimport os\n\nX = 1\n',
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in client.diagnostics[uri]}
+    assert FAILURE_CODE not in codes, "a saved file was reported as having unsaved changes"
+    assert "E9999" in codes
+
+
+def test_matches_disk_ignores_the_editor_s_line_ending_normalisation(tmp_path) -> None:
+    from pyta_lsp.server import matches_disk
+
+    path = tmp_path / "mod.py"
+    path.write_bytes(b'"""Doc."""\r\nX = 1\n\rY = 2\n')
+
+    assert matches_disk(str(path), '"""Doc."""\nX = 1\n\nY = 2\n')
+    assert not matches_disk(str(path), '"""Doc."""\nX = 2\n\nY = 2\n')
