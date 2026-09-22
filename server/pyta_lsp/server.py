@@ -13,7 +13,7 @@ from pygls.lsp.server import LanguageServer
 
 from . import __version__
 from .diagnostics import failure_diagnostic, to_diagnostic
-from .scheduler import CheckScheduler
+from .scheduler import GENERATION_KEY, CheckScheduler
 
 log = logging.getLogger("pyta_lsp")
 STATUS_NOTIFICATION = "pyta/status"
@@ -68,6 +68,7 @@ class PytaLanguageServer(LanguageServer):
         result = self.scheduler.run(uri, argv, os.path.dirname(path))
         if result is None:
             return
+        generation = result.pop(GENERATION_KEY)
         if result.get("ok"):
             try:
                 lines = doc.lines
@@ -90,7 +91,7 @@ class PytaLanguageServer(LanguageServer):
             )
             self.notify_status(uri, "done", len(diagnostics))
 
-        self.scheduler.guard(uri, publish)
+        self.scheduler.guard(uri, generation, publish)
 
     def clear(self, uri: str) -> None:
         self.scheduler.cancel(uri)

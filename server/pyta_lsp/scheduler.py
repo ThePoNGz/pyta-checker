@@ -11,6 +11,9 @@ from typing import Any, Callable
 
 Spawn = Callable[[list[str], str], subprocess.Popen]
 
+# Identifies which run produced a result, so a stale thread cannot republish it.
+GENERATION_KEY = "__generation__"
+
 
 def runner_env() -> dict[str, str]:
     env = dict(os.environ)
@@ -110,13 +113,21 @@ class CheckScheduler:
             if self._generation[key] != generation:
                 return None
             self._completed[key] = generation
-        return _interpret(out, err, proc.returncode, timed_out, self._timeout)
+        result = _interpret(out, err, proc.returncode, timed_out, self._timeout)
+        result[GENERATION_KEY] = generation
+        return result
 
-    def guard(self, key: str, action: Callable[[], None]) -> bool:
-        """Run action under the lock only if no newer request or cancel happened since the last completed run for key."""
+    def guard(self, key: str, generation: int, action: Callable[[], None]) -> bool:
+        """Run action under the lock only if `generation` is still both the newest and the last completed run for key.
+
+        Comparing against the caller's own generation is what stops a slow thread
+        holding an older result from republishing it over newer diagnostics.
+        """
         with self._lock:
             completed = self._completed.get(key)
-            if completed is None or self._generation.get(key) != completed:
+            if completed is None or completed != generation:
+                return False
+            if self._generation.get(key) != completed:
                 return False
             action()
             return True
