@@ -270,3 +270,84 @@ def test_cancel_all_stops_checks_that_are_still_queued_for_a_slot(tmp_path: Path
     assert elapsed < 3, f"cancel_all took {elapsed:.1f}s to release every thread"
     assert set(results) == {"a", "b", "c", "d"}
     assert all(value is None for value in results.values()), results
+
+
+class _Pipe:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _StuckProc:
+    """A runner whose pipes a surviving grandchild still holds open."""
+
+    pid = 424242
+    returncode = None
+
+    def __init__(self) -> None:
+        self.stdout = _Pipe()
+        self.stderr = _Pipe()
+
+    def poll(self):
+        return None
+
+    def kill(self) -> None:
+        pass
+
+    def communicate(self, timeout=None):
+        import subprocess as sp
+
+        if timeout is None:
+            time.sleep(15)
+            return b"", b""
+        raise sp.TimeoutExpired(cmd="runner", timeout=timeout)
+
+
+def _no_kill(monkeypatch) -> None:
+    from pyta_lsp import scheduler as sched
+
+    monkeypatch.setattr(sched, "_kill", lambda proc: None)
+
+
+def test_a_superseded_run_does_not_wait_forever_on_a_failed_kill(monkeypatch, tmp_path: Path) -> None:
+    # taskkill can exit nonzero and leave a grandchild holding the pipes. An
+    # untimed communicate() then parks the pool thread and its slot for good.
+    _no_kill(monkeypatch)
+    scheduler = CheckScheduler(timeout=30, max_parallel=1)
+    proc = _StuckProc()
+
+    def spawn(argv, cwd):
+        scheduler.cancel("doc")  # a newer request arrives while this one spawns
+        return proc
+
+    scheduler._spawn = spawn  # type: ignore[assignment]
+    started = time.monotonic()
+    result = scheduler.run("doc", ["runner"], str(tmp_path))
+    elapsed = time.monotonic() - started
+
+    assert result is None
+    assert elapsed < 8, f"the superseded branch held its slot for {elapsed:.1f}s"
+    assert proc.stdout.closed and proc.stderr.closed, "the pipes were left open"
+
+
+def test_a_timed_out_run_closes_its_pipes_when_the_kill_does_not_take(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import subprocess as sp
+
+    _no_kill(monkeypatch)
+    scheduler = CheckScheduler(timeout=0.1, max_parallel=1)
+    proc = _StuckProc()
+    monkeypatch.setattr(
+        _StuckProc,
+        "communicate",
+        lambda self, timeout=None: (_ for _ in ()).throw(sp.TimeoutExpired("runner", timeout or 0)),
+    )
+    scheduler._spawn = lambda argv, cwd: proc  # type: ignore[assignment]
+
+    result = scheduler.run("doc", ["runner"], str(tmp_path))
+
+    assert result is not None and "timed out" in result["error"]
+    assert proc.stdout.closed and proc.stderr.closed, "the pipes were left open"

@@ -96,6 +96,16 @@ def _kill(proc: subprocess.Popen) -> None:
         pass
 
 
+def _close_pipes(proc: subprocess.Popen) -> None:
+    """A tree kill that did not take leaves a grandchild holding these open."""
+    for pipe in (proc.stdout, proc.stderr):
+        if pipe is not None:
+            try:
+                pipe.close()
+            except OSError:
+                pass
+
+
 def _failure(error: str, log: str) -> dict[str, Any]:
     return {"ok": False, "error": error, "messages": [], "log": log, "warnings": [], "traceback": None}
 
@@ -149,7 +159,12 @@ class CheckScheduler:
                     self._procs[key] = proc
             if superseded:
                 _kill(proc)
-                proc.communicate()
+                try:
+                    proc.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                finally:
+                    _close_pipes(proc)
                 return None
 
             timed_out = False
@@ -161,6 +176,8 @@ class CheckScheduler:
                     out, err = proc.communicate(timeout=5)
                 except subprocess.TimeoutExpired:
                     out, err = b"", b""
+                finally:
+                    _close_pipes(proc)
                 timed_out = True
 
         with self._lock:
