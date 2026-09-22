@@ -29,6 +29,9 @@ function id(section: string, key: string): string {
 }
 
 export const workspace = {
+  onDidChangeConfiguration(): Disposable {
+    return new Disposable();
+  },
   getConfiguration(section: string) {
     return {
       get<T>(key: string, fallback: T): T {
@@ -61,13 +64,62 @@ export const commands = {
   async executeCommand(command: string): Promise<void> {
     state.ran.push(command);
   },
+  registerCommand(): Disposable {
+    return new Disposable();
+  },
 };
 
+export class Disposable {
+  dispose(): void {
+    /* nothing to release in the stub */
+  }
+}
+
+export enum StatusBarAlignment {
+  Left = 1,
+  Right = 2,
+}
+
 export const window = {
+  activeTextEditor: undefined,
   async showInformationMessage(): Promise<undefined> {
     return undefined;
   },
   async showErrorMessage(): Promise<undefined> {
     return undefined;
+  },
+  async showWarningMessage(): Promise<undefined> {
+    return undefined;
+  },
+  createOutputChannel() {
+    return {
+      info: () => undefined,
+      warn: () => undefined,
+      error: () => undefined,
+      show: () => undefined,
+      dispose: () => undefined,
+    };
+  },
+  createStatusBarItem() {
+    return {
+      text: '',
+      tooltip: '',
+      command: '',
+      show: () => undefined,
+      hide: () => undefined,
+      dispose: () => undefined,
+    };
+  },
+};
+
+export const Uri = {
+  parse(value: string): { toString(): string } {
+    return { toString: () => value };
+  },
+};
+
+export const env = {
+  async openExternal(): Promise<boolean> {
+    return true;
   },
 };

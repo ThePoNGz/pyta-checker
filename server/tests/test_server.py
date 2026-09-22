@@ -119,3 +119,122 @@ async def test_precheck_failure_is_published_as_pyta_error(client: LanguageClien
     assert [d.code for d in diagnostics] == ["pyta-error"]
     assert diagnostics[0].range.start.line == 0
     assert "pylint:" in diagnostics[0].message
+
+
+def test_workspace_root_follows_the_file_in_a_multi_root_workspace(tmp_path) -> None:
+    from pyta_lsp.server import select_workspace_root
+
+    first = tmp_path / "csc148"
+    second = tmp_path / "csc110"
+    for folder in (first, second):
+        folder.mkdir()
+    folders = [str(first), str(second)]
+
+    assert select_workspace_root(folders, str(second / "a1" / "tally.py")) == str(second)
+    assert select_workspace_root(folders, str(first / "tally.py")) == str(first)
+
+
+def test_workspace_root_prefers_the_innermost_folder(tmp_path) -> None:
+    from pyta_lsp.server import select_workspace_root
+
+    outer = tmp_path / "work"
+    inner = outer / "csc148"
+    inner.mkdir(parents=True)
+
+    assert select_workspace_root([str(outer), str(inner)], str(inner / "tally.py")) == str(inner)
+
+
+def test_workspace_root_falls_back_when_the_file_is_outside_every_folder(tmp_path) -> None:
+    from pyta_lsp.server import select_workspace_root
+
+    folders = [str(tmp_path / "csc148"), str(tmp_path / "csc110")]
+
+    assert select_workspace_root(folders, str(tmp_path / "scratch" / "x.py")) == folders[0]
+    assert select_workspace_root([], str(tmp_path / "x.py")) is None
+
+
+def _open_params(uri: str):
+    return types.DidOpenTextDocumentParams(
+        text_document=types.TextDocumentItem(uri=uri, language_id="python", version=1, text="x = 1\n")
+    )
+
+
+def test_automatic_checks_do_not_occupy_a_protocol_worker() -> None:
+    # The pygls worker pool also serves the stdin reader, so a burst of opens that
+    # each block a worker until their subprocess finishes stalls every later
+    # message - close, shutdown, configuration - behind them.
+    import threading
+    import time
+
+    from pyta_lsp import server as srv
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Blocking(srv.PytaLanguageServer):
+        def check(self, uri: str) -> None:
+            entered.set()
+            release.wait(10)
+
+    ls = Blocking()
+    started = time.monotonic()
+    try:
+        srv.did_open(ls, _open_params("file:///tmp/a1.py"))
+        elapsed = time.monotonic() - started
+        assert entered.wait(5), "the check never ran"
+    finally:
+        release.set()
+
+    assert elapsed < 0.5, f"did_open blocked for {elapsed:.1f}s waiting on the check"
+
+
+async def test_open_checks_the_editor_buffer_not_the_file_on_disk(
+    client: LanguageClient, tmp_path
+) -> None:
+    # A window reload restores unsaved edits, so the buffer and the file on disk can
+    # differ. Checking disk while mapping positions onto the buffer puts squiggles on
+    # lines the user never wrote.
+    path = tmp_path / "dirty.py"
+    path.write_text('"""Doc."""\nX = 1\n', encoding="utf-8")
+    uri = path.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri,
+                language_id="python",
+                version=1,
+                text='"""Doc."""\nimport os\n\nX = 1\n',
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    assert "E9999" in {d.code for d in client.diagnostics[uri]}
+
+
+async def test_non_utf8_file_is_checked_through_the_staged_copy(
+    client: LanguageClient, tmp_path
+) -> None:
+    # PythonTA reads the path it is given as UTF-8 and raises on anything else, so a
+    # file carrying a cp1252 coding cookie could be parsed but never checked.
+    # Staging the buffer as UTF-8 makes it checkable.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    text = '# -*- coding: cp1252 -*-\n"""Doc."""\nimport os\n\nNAME = "café"\n'
+    path = tmp_path / "accented.py"
+    path.write_bytes(text.encode("cp1252"))
+    uri = path.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri, language_id="python", version=1, text=text
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in client.diagnostics[uri]}
+    assert FAILURE_CODE not in codes, "PythonTA still could not read the file"
+    assert "E9999" in codes
