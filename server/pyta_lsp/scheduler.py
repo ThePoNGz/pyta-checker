@@ -126,6 +126,7 @@ class CheckScheduler:
         self._generation: dict[str, int] = {}
         self._completed: dict[str, int] = {}
         self._procs: dict[str, subprocess.Popen] = {}
+        self._stopped = False
 
     def run(self, key: str, argv: list[str], cwd: str) -> dict[str, Any] | None:
         with self._lock:
@@ -136,6 +137,11 @@ class CheckScheduler:
             _kill(previous)
 
         with self._slots:
+            with self._lock:
+                # A thread can wait here for minutes; spawning after cancel_all
+                # would start a runner nothing is left to kill it.
+                if self._stopped:
+                    return None
             proc = self._spawn(argv, cwd)
             with self._lock:
                 superseded = self._generation[key] != generation
@@ -183,11 +189,20 @@ class CheckScheduler:
             return True
 
     def cancel_all(self) -> None:
-        """Kill every in-flight check so its worker thread stops waiting."""
+        """Stop every check, the ones still queued for a slot included.
+
+        Bumping only the keys that already hold a process left a queued thread
+        looking current, so it spawned a runner after shutdown and then waited
+        out the timeout on it.
+        """
         with self._lock:
-            keys = list(self._procs)
-        for key in keys:
-            self.cancel(key)
+            self._stopped = True
+            for key in self._generation:
+                self._generation[key] += 1
+            procs = list(self._procs.values())
+            self._procs.clear()
+        for proc in procs:
+            _kill(proc)
 
     def cancel(self, key: str) -> None:
         with self._lock:

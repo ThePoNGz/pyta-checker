@@ -231,3 +231,42 @@ def test_mypy_cache_dir_survives_an_unknown_user(monkeypatch) -> None:
     monkeypatch.setattr(getpass, "getuser", no_user)
 
     assert runner_env()["MYPY_CACHE_DIR"]
+
+
+def test_cancel_all_stops_checks_that_are_still_queued_for_a_slot(tmp_path: Path) -> None:
+    # cancel_all only ever bumped the generation of a key that already had a
+    # process, so a thread parked on the slot semaphore woke up after shutdown,
+    # spawned a fresh runner and waited the full timeout on it. Exit time then
+    # grew with the number of open documents.
+    from pyta_lsp.scheduler import default_spawn
+
+    spawned: list[list[str]] = []
+
+    def counting_spawn(argv: list[str], cwd: str):
+        spawned.append(argv)
+        return default_spawn(argv, cwd)
+
+    scheduler = CheckScheduler(spawn=counting_spawn, timeout=60, max_parallel=2)
+    results: dict[str, object] = {}
+
+    def run(key: str) -> None:
+        results[key] = scheduler.run(
+            key, _grandchild_argv(tmp_path / f"{key}.txt", sleep=20), str(tmp_path)
+        )
+
+    threads = [threading.Thread(target=run, args=(key,)) for key in ("a", "b", "c", "d")]
+    for t in threads:
+        t.start()
+    time.sleep(1.0)
+
+    started = time.monotonic()
+    scheduler.cancel_all()
+    for t in threads:
+        t.join(timeout=20)
+    elapsed = time.monotonic() - started
+
+    assert not any(t.is_alive() for t in threads), "a check thread never returned"
+    assert len(spawned) == 2, f"a runner was spawned after cancel_all: {len(spawned)} spawns"
+    assert elapsed < 3, f"cancel_all took {elapsed:.1f}s to release every thread"
+    assert set(results) == {"a", "b", "c", "d"}
+    assert all(value is None for value in results.values()), results

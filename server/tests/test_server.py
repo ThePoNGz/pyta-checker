@@ -343,7 +343,7 @@ def test_the_server_exits_while_checks_are_in_flight() -> None:
         proc.stdin.flush()
         time.sleep(1.5)
         text = target.read_text(encoding="utf-8")
-        for index in range(4):
+        for index in range(6):
             proc.stdin.write(
                 _frame(
                     {
@@ -372,7 +372,10 @@ def test_the_server_exits_while_checks_are_in_flight() -> None:
             proc.wait(timeout=30)
         except subprocess.TimeoutExpired:
             raise AssertionError("the server did not exit within 30s with checks in flight")
-        assert time.monotonic() - started < 25
+        elapsed = time.monotonic() - started
+        # Six documents, two slots: four checks are queued behind the semaphore
+        # when exit arrives, and none of them may spawn a runner of its own.
+        assert elapsed < 5, f"exit took {elapsed:.1f}s and scales with open documents"
     finally:
         if proc.poll() is None:
             proc.kill()
