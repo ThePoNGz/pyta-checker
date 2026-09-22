@@ -119,3 +119,70 @@ async def test_precheck_failure_is_published_as_pyta_error(client: LanguageClien
     assert [d.code for d in diagnostics] == ["pyta-error"]
     assert diagnostics[0].range.start.line == 0
     assert "pylint:" in diagnostics[0].message
+
+
+def test_workspace_root_follows_the_file_in_a_multi_root_workspace(tmp_path) -> None:
+    from pyta_lsp.server import select_workspace_root
+
+    first = tmp_path / "csc148"
+    second = tmp_path / "csc110"
+    for folder in (first, second):
+        folder.mkdir()
+    folders = [str(first), str(second)]
+
+    assert select_workspace_root(folders, str(second / "a1" / "tally.py")) == str(second)
+    assert select_workspace_root(folders, str(first / "tally.py")) == str(first)
+
+
+def test_workspace_root_prefers_the_innermost_folder(tmp_path) -> None:
+    from pyta_lsp.server import select_workspace_root
+
+    outer = tmp_path / "work"
+    inner = outer / "csc148"
+    inner.mkdir(parents=True)
+
+    assert select_workspace_root([str(outer), str(inner)], str(inner / "tally.py")) == str(inner)
+
+
+def test_workspace_root_falls_back_when_the_file_is_outside_every_folder(tmp_path) -> None:
+    from pyta_lsp.server import select_workspace_root
+
+    folders = [str(tmp_path / "csc148"), str(tmp_path / "csc110")]
+
+    assert select_workspace_root(folders, str(tmp_path / "scratch" / "x.py")) == folders[0]
+    assert select_workspace_root([], str(tmp_path / "x.py")) is None
+
+
+def _open_params(uri: str):
+    return types.DidOpenTextDocumentParams(
+        text_document=types.TextDocumentItem(uri=uri, language_id="python", version=1, text="x = 1\n")
+    )
+
+
+def test_automatic_checks_do_not_occupy_a_protocol_worker() -> None:
+    # The pygls worker pool also serves the stdin reader, so a burst of opens that
+    # each block a worker until their subprocess finishes stalls every later
+    # message - close, shutdown, configuration - behind them.
+    import threading
+    import time
+
+    from pyta_lsp import server as srv
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Blocking(srv.PytaLanguageServer):
+        def check(self, uri: str) -> None:
+            entered.set()
+            release.wait(10)
+
+    ls = Blocking()
+    started = time.monotonic()
+    try:
+        srv.did_open(ls, _open_params("file:///tmp/a1.py"))
+        elapsed = time.monotonic() - started
+        assert entered.wait(5), "the check never ran"
+    finally:
+        release.set()
+
+    assert elapsed < 0.5, f"did_open blocked for {elapsed:.1f}s waiting on the check"

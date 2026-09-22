@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,12 +40,44 @@ class Settings:
         )
 
 
+def select_workspace_root(folders: list[str], path: str) -> str | None:
+    """The folder holding the file, so a relative configPath resolves against it.
+
+    A multi-root workspace can hold one folder per course, each with its own
+    config; resolving every file against the first folder loads the wrong one.
+    """
+    if not folders:
+        return None
+    target = os.path.normcase(os.path.abspath(path))
+    best: str | None = None
+    best_len = -1
+    for folder in folders:
+        prefix = os.path.normcase(os.path.abspath(folder))
+        if target == prefix or target.startswith(prefix + os.sep):
+            if len(prefix) > best_len:
+                best, best_len = folder, len(prefix)
+    return best if best is not None else folders[0]
+
+
 class PytaLanguageServer(LanguageServer):
     def __init__(self) -> None:
         super().__init__(name="pyta-lsp", version=__version__, max_workers=12)
         self.settings = Settings()
         self.scheduler = CheckScheduler()
-        self.workspace_root: str | None = None
+        self.workspace_folders: list[str] = []
+        # Checks get their own pool. The pygls pool also serves the stdin reader,
+        # so a burst of opens running there can stall every later message until a
+        # subprocess finishes. Queued work waits here instead.
+        self._checks = ThreadPoolExecutor(max_workers=4, thread_name_prefix="pyta-check")
+
+    def schedule_check(self, uri: str) -> None:
+        self._checks.submit(self._run_check, uri)
+
+    def _run_check(self, uri: str) -> None:
+        try:
+            self.check(uri)
+        except Exception:  # a worker thread swallows exceptions silently otherwise
+            log.exception("PythonTA check failed for %s", uri)
 
     def notify_status(self, uri: str, state: str, count: int | None = None) -> None:
         self.protocol.notify(STATUS_NOTIFICATION, {"uri": uri, "state": state, "count": count})
@@ -63,8 +96,9 @@ class PytaLanguageServer(LanguageServer):
         argv = [sys.executable, "-m", "pyta_lsp.runner", path]
         if self.settings.config_path:
             argv += ["--config", self.settings.config_path]
-            if self.workspace_root:
-                argv += ["--workspace-root", self.workspace_root]
+            root = select_workspace_root(self.workspace_folders, path)
+            if root:
+                argv += ["--workspace-root", root]
         result = self.scheduler.run(uri, argv, os.path.dirname(path))
         if result is None:
             return
@@ -105,24 +139,22 @@ server = PytaLanguageServer()
 def on_initialize(ls: PytaLanguageServer, params: types.InitializeParams) -> None:
     ls.settings = Settings.from_dict(params.initialization_options)
     folders = params.workspace_folders or []
-    if folders:
-        ls.workspace_root = uris.to_fs_path(folders[0].uri)
-    elif params.root_uri:
-        ls.workspace_root = uris.to_fs_path(params.root_uri)
+    roots = [uris.to_fs_path(folder.uri) for folder in folders]
+    if not roots and params.root_uri:
+        roots = [uris.to_fs_path(params.root_uri)]
+    ls.workspace_folders = [root for root in roots if root]
 
 
-@server.thread()
 @server.feature(types.TEXT_DOCUMENT_DID_OPEN)
 def did_open(ls: PytaLanguageServer, params: types.DidOpenTextDocumentParams) -> None:
     if ls.settings.run_on_open:
-        ls.check(params.text_document.uri)
+        ls.schedule_check(params.text_document.uri)
 
 
-@server.thread()
 @server.feature(types.TEXT_DOCUMENT_DID_SAVE)
 def did_save(ls: PytaLanguageServer, params: types.DidSaveTextDocumentParams) -> None:
     if ls.settings.run_on_save:
-        ls.check(params.text_document.uri)
+        ls.schedule_check(params.text_document.uri)
 
 
 @server.feature(types.TEXT_DOCUMENT_DID_CLOSE)
