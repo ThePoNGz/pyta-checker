@@ -1,0 +1,5 @@
+[FORBIDDEN IMPORT]
+extra-imports = random
+
+[FORMAT]
+max-line-length = 100
