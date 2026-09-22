@@ -240,6 +240,35 @@ def test_a_keyword_config_is_read_even_beside_a_starred_argument_list() -> None:
     assert result.warnings == []
 
 
+def test_a_positional_config_is_still_read_beside_a_starred_keyword_dict() -> None:
+    # **kwargs cannot take a positional slot away: args[1] is the config whatever
+    # the dict carries. Treating it as if it could hid a config that was read
+    # correctly before, and the file was checked against stock defaults.
+    source = (
+        "import python_ta\nEXTRA = {'output': None}\n"
+        "python_ta.check_all('a1.py', {'extra-imports': ['random']}, **EXTRA)\n"
+    )
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.kind == "dict"
+    assert result.value == {"extra-imports": ["random"]}
+    assert any("cannot be read" in w for w in result.warnings), result.warnings
+
+
+def test_a_keyword_config_is_read_beside_a_starred_keyword_dict() -> None:
+    # The warning belongs to the **kwargs, not to the config: it fires whenever
+    # one is there, because it can still carry a load_default_config we cannot see.
+    source = (
+        "import python_ta\nEXTRA = {'load_default_config': False}\n"
+        "python_ta.check_all('a1.py', config={'a': 1}, **EXTRA)\n"
+    )
+    result = extract_config(ast.parse(source), Path("."))
+
+    assert result.kind == "dict"
+    assert result.value == {"a": 1}
+    assert any("cannot be read" in w for w in result.warnings), result.warnings
+
+
 def test_a_starred_keyword_dict_is_not_guessed_at() -> None:
     # **CFG can carry config or load_default_config and there is no way to tell,
     # so this was silently checked against the defaults with nothing said.

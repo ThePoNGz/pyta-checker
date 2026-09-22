@@ -78,23 +78,20 @@ def _argument(call: ast.Call, name: str) -> ast.expr | None:
     keyword = next((kw for kw in call.keywords if kw.arg == name), None)
     if keyword is not None:
         return keyword.value
-    if _unpacked(call) is not None:
+    if _starred_args(call):
         return None
     index = _POSITIONS[name]
     return call.args[index] if index < len(call.args) else None
 
 
-def _unpacked(call: ast.Call) -> str | None:
-    """The unpacking that hides an argument the call did not name.
+def _starred_args(call: ast.Call) -> bool:
+    """*args shifts every position, so no positional slot can be read."""
+    return any(isinstance(arg, ast.Starred) for arg in call.args)
 
-    *args shifts every position, **kwargs can carry any keyword at all; either
-    way an argument not given by keyword cannot be read out of this call.
-    """
-    if any(isinstance(arg, ast.Starred) for arg in call.args):
-        return "*args"
-    if any(kw.arg is None for kw in call.keywords):
-        return "**kwargs"
-    return None
+
+def _starred_kwargs(call: ast.Call) -> bool:
+    """**kwargs can carry any keyword at all, but it takes no positional slot."""
+    return any(kw.arg is None for kw in call.keywords)
 
 
 def _load_default_config(call: ast.Call, name: str) -> tuple[bool | None, list[str]]:
@@ -127,19 +124,29 @@ def extract_config(tree: ast.AST, base_dir: Path) -> ExtractedConfig:
         ((n, c) for n, c in calls if _argument(c, "config") is not None),
         calls[0],
     )
-    load_default, warnings = _load_default_config(call, name)
+    warnings: list[str] = []
+    if _starred_kwargs(call):
+        # It takes no positional slot, so whatever is written out is still read;
+        # what it may carry unseen is another config or a load_default_config.
+        warnings.append(
+            f"line {call.lineno}: {name}() is called with **kwargs, "
+            "so the arguments it carries cannot be read"
+        )
+    load_default, literal_warnings = _load_default_config(call, name)
+    warnings += literal_warnings
     config_node = _argument(call, "config")
     if config_node is None:
-        unpacked = _unpacked(call)
-        if unpacked is not None:
+        if _starred_args(call):
             return ExtractedConfig(
                 "absent",
                 None,
                 name == "check_errors",
-                [
-                    f"line {call.lineno}: {name}() is called with {unpacked}, "
-                    "so its arguments cannot be read; using defaults"
+                warnings
+                + [
+                    f"line {call.lineno}: {name}() is called with *args, "
+                    "so its positional arguments cannot be read; using defaults"
                 ],
+                load_default,
             )
         errors_only = calls[0][0] == "check_errors"
         return ExtractedConfig("absent", None, errors_only, warnings, load_default)
