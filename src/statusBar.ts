@@ -44,7 +44,7 @@ export class StatusBar implements vscode.Disposable {
       return;
     }
     if (this.serverState === 'starting') {
-      this.set('$(sync~spin) PyTA', 'PythonTA server is starting', 'pythonta.showOutput', false);
+      this.set('$(sync~spin) PyTA', 'PythonTA server is starting', 'pythonta.check', false);
       return;
     }
     const editor = vscode.window.activeTextEditor;
