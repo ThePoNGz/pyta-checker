@@ -87,6 +87,12 @@ describe('re-applying an enable that is already in place', () => {
 });
 
 describe('toggleOnlyPyta', () => {
+  // Only-PythonTA is on by default, so a toggle that turns it on starts from a user
+  // who turned it off earlier.
+  beforeEach(() => {
+    stub.state.values['pythonta.hideOtherPythonDiagnostics'] = false;
+  });
+
   it('reports the real failure with a Show Output action', async () => {
     stub.state.rejects['python.analysis.ignore'] = 'EACCES: permission denied, open settings.json';
     stub.state.errorAnswer = 'Show Output';
@@ -147,38 +153,85 @@ describe('toggleOnlyPyta', () => {
   });
 });
 
-describe('maybePromptFirstRun', () => {
-  it('does not ask again on a second machine where the setting synced across', async () => {
-    // hideOtherPythonDiagnostics travels with Settings Sync but the prompted flag in
-    // globalState does not.
-    stub.state.values['pythonta.hideOtherPythonDiagnostics'] = true;
-    const context = fakeContext();
-    stub.state.answer = 'No';
+describe('maybeShowOnlyPytaNotice', () => {
+  const NOTICE =
+    "PythonTA Checker is hiding Pylance and basedpyright problems so only PythonTA's show. Autocomplete still works. Use 'PythonTA: Toggle Only-PythonTA Problems' to change that.";
 
-    await onlyPyta.maybePromptFirstRun(context);
+  /** Activation applies first and hands the notice what that cycle managed to do. */
+  function activate(context: Context): Promise<void> {
+    return onlyPyta
+      .applyOnlyPyta(stub.state.values['pythonta.hideOtherPythonDiagnostics'] !== false, context, log, { silent: true })
+      .then((outcome) => onlyPyta.maybeShowOnlyPytaNotice(context, outcome));
+  }
+
+  it('tells the user once that the other problems are hidden', async () => {
+    const context = fakeContext();
+
+    await activate(context);
+
+    expect(stub.state.info).toEqual([NOTICE]);
+    expect(context.globalState.get(onlyPyta.NOTICE_KEY)).toBe(true);
+  });
+
+  it('says nothing on the next activation', async () => {
+    const context = fakeContext();
+    await activate(context);
+    stub.state.info.length = 0;
+
+    await activate(context);
 
     expect(stub.state.info).toEqual([]);
-    expect(stub.state.values['pythonta.hideOtherPythonDiagnostics']).toBe(true);
-    expect(context.globalState.get(onlyPyta.PROMPTED_KEY)).toBe(true);
   });
 
-  it('turns the setting off when the user answers No to a prompt they enabled meanwhile', async () => {
-    stub.state.answer = 'No';
-    stub.state.onInfo = () => {
-      stub.state.values['pythonta.hideOtherPythonDiagnostics'] = true;
-    };
+  it('says nothing when Only-PythonTA is off', async () => {
+    // Either the user turned it off here or Settings Sync carried an off value over.
+    stub.state.values['pythonta.hideOtherPythonDiagnostics'] = false;
+    const context = fakeContext();
 
-    await onlyPyta.maybePromptFirstRun(fakeContext());
+    await activate(context);
 
-    expect(stub.state.values['pythonta.hideOtherPythonDiagnostics']).toBe(false);
+    expect(stub.state.info).toEqual([]);
+    expect(context.globalState.get(onlyPyta.NOTICE_KEY)).toBeUndefined();
   });
 
-  it('writes nothing when No leaves the setting as it already was', async () => {
-    stub.state.answer = 'No';
+  it('says nothing when a workspace setting blocked the hide', async () => {
+    // Nothing is hidden, so a notice saying it is would be wrong, and the next window
+    // still owes the user the notice.
+    stub.state.scoped['python.analysis.ignore'] = ['src/generated'];
+    const context = fakeContext();
 
-    await onlyPyta.maybePromptFirstRun(fakeContext());
+    await activate(context);
 
-    expect(stub.state.writes).toEqual([]);
+    expect(stub.state.info).toEqual([]);
+    expect(context.globalState.get(onlyPyta.NOTICE_KEY)).toBeUndefined();
+  });
+
+  it('says nothing when a write failed', async () => {
+    stub.state.rejects['python.analysis.ignore'] = 'EACCES: permission denied, open settings.json';
+    const context = fakeContext();
+
+    await activate(context);
+
+    expect(stub.state.info).toEqual([]);
+  });
+
+  it('runs the toggle command when the user asks for the other problems back', async () => {
+    stub.state.answer = 'Show them again';
+
+    await activate(fakeContext());
+
+    expect(stub.state.ran).toContain('pythonta.toggleOnlyPyta');
+  });
+
+  it('stays quiet when PYTA_SKIP_PROMPT is set, which the integration tests rely on', async () => {
+    process.env.PYTA_SKIP_PROMPT = '1';
+    try {
+      await activate(fakeContext());
+    } finally {
+      delete process.env.PYTA_SKIP_PROMPT;
+    }
+
+    expect(stub.state.info).toEqual([]);
   });
 });
 
@@ -186,6 +239,7 @@ describe('toggle off under a workspace override', () => {
   it('says the problems stay hidden instead of claiming they are visible again', async () => {
     // A workspace analysis.ignore outranks the restored user value in both directions,
     // so the global restore lands and the other server keeps ignoring.
+    stub.state.values['pythonta.hideOtherPythonDiagnostics'] = false;
     const context = fakeContext();
     await onlyPyta.toggleOnlyPyta(context, log);
     stub.state.info.length = 0;

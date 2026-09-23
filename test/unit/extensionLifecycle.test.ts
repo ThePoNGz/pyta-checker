@@ -189,6 +189,22 @@ describe('extension lifecycle', () => {
     expect(synced).toEqual([[SAVED_KEY]]);
   });
 
+  it('tells the user once that Only-PythonTA is hiding the other problems', async () => {
+    // Only-PythonTA is on by default, so the first window says so instead of asking.
+    mocks.findPython.mockResolvedValue({ path: 'python' });
+    const context = fakeContext();
+
+    await extension.activate(context);
+    await flush();
+    expect(stub.state.info.join(' ')).toContain('only PythonTA');
+
+    stub.state.info.length = 0;
+    await extension.activate(context);
+    await flush();
+
+    expect(stub.state.info).toEqual([]);
+  });
+
   it('does not start a server when deactivate lands mid-restart', async () => {
     // Interpreter discovery can take seconds. Deactivating while it is in flight
     // must not leave a language server running with nothing owning it.

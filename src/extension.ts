@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { State, type LanguageClient } from 'vscode-languageclient/node';
 import { createClient, requestCheck } from './client';
 import { STATUS_NOTIFICATION, type StatusParams } from './client';
-import { SAVED_KEY, applyOnlyPyta, maybePromptFirstRun, syncOnlyPyta, toggleOnlyPyta } from './onlyPyta';
+import { SAVED_KEY, applyOnlyPyta, maybeShowOnlyPytaNotice, syncOnlyPyta, toggleOnlyPyta, type ApplyOutcome } from './onlyPyta';
 import { findPython, onInterpreterChanged } from './python';
 import { getSettings } from './settings';
 import { StatusBar } from './statusBar';
@@ -55,14 +55,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
   await restartServer(context);
   const settings = getSettings();
+  // The notice only goes up for a hide that actually landed, so it needs what the
+  // apply came back with.
+  let outcome: ApplyOutcome | undefined;
   if (settings.hideOtherPythonDiagnostics || context.globalState.get(SAVED_KEY)) {
     try {
-      await applyOnlyPyta(settings.hideOtherPythonDiagnostics, context, log, { silent: true });
+      outcome = await applyOnlyPyta(settings.hideOtherPythonDiagnostics, context, log, { silent: true });
     } catch (error) {
       log.error(`Only-PythonTA setup failed: ${String(error)}`);
     }
   }
-  maybePromptFirstRun(context).catch((error) => log.error(`First-run prompt failed: ${String(error)}`));
+  maybeShowOnlyPytaNotice(context, outcome).catch((error) => log.error(`Only-PythonTA notice failed: ${String(error)}`));
 }
 
 export async function deactivate(): Promise<void> {

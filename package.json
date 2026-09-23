@@ -12,7 +12,7 @@
   "bugs": {
     "url": "https://github.com/ThePoNGz/pyta-checker/issues"
   },
-  "icon": "media/icon.png",
+  "icon": "pytacheckericon512.png",
   "homepage": "https://github.com/ThePoNGz/pyta-checker#readme",
   "qna": "https://github.com/ThePoNGz/pyta-checker/issues",
   "engines": {
@@ -117,9 +117,9 @@
         },
         "pythonta.hideOtherPythonDiagnostics": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "scope": "application",
-          "description": "Hide Pylance and basedpyright problems so only PythonTA's show. Autocomplete keeps working. Toggle with the 'PythonTA: Toggle Only-PythonTA Problems' command."
+          "description": "Hide Pylance and basedpyright problems so only PythonTA's show. This is on by default. Autocomplete keeps working. Turn it off, or back on, with the 'PythonTA: Toggle Only-PythonTA Problems' command."
         },
         "pythonta.trace.server": {
           "type": "string",

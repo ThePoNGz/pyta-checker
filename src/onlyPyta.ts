@@ -15,9 +15,14 @@ import {
 import { SECTION } from './settings';
 
 export const SAVED_KEY = 'pythonta.savedIgnore';
-export const PROMPTED_KEY = 'pythonta.promptedOnlyPyta';
+// Same key the first run question used, so nobody who already answered it gets told
+// again what they just decided.
+export const NOTICE_KEY = 'pythonta.promptedOnlyPyta';
 const SETTING = 'hideOtherPythonDiagnostics';
 const SHOW_OUTPUT = 'Show Output';
+const SHOW_AGAIN = 'Show them again';
+const NOTICE =
+  "PythonTA Checker is hiding Pylance and basedpyright problems so only PythonTA's show. Autocomplete still works. Use 'PythonTA: Toggle Only-PythonTA Problems' to change that.";
 
 /** What one apply cycle actually managed to do. */
 export interface ApplyOutcome {
@@ -35,34 +40,40 @@ export interface ApplyOptions {
 }
 
 function isHideEnabled(): boolean {
-  return vscode.workspace.getConfiguration(SECTION).get<boolean>(SETTING, false);
+  return vscode.workspace.getConfiguration(SECTION).get<boolean>(SETTING, true);
 }
 
-export async function maybePromptFirstRun(context: vscode.ExtensionContext): Promise<void> {
-  if (context.globalState.get<boolean>(PROMPTED_KEY) || process.env.PYTA_SKIP_PROMPT) {
+/**
+ * Tell the user once that the other Python problems are hidden, with a way out.
+ *
+ * @param context gives us the globalState that remembers whether we said it already
+ * @param outcome what the activation apply managed to do, undefined when it threw
+ */
+export async function maybeShowOnlyPytaNotice(
+  context: vscode.ExtensionContext,
+  outcome: ApplyOutcome | undefined,
+): Promise<void> {
+  if (context.globalState.get<boolean>(NOTICE_KEY) || process.env.PYTA_SKIP_PROMPT) {
     return;
   }
-  await context.globalState.update(PROMPTED_KEY, true);
-  // Settings Sync carries the setting between machines but not globalState, so on a
-  // second machine it can already be on with nothing recorded here.
-  if (isHideEnabled()) {
+  // Settings Sync carries the setting between machines but not globalState, so the
+  // setting is what says whether anything is hidden on this one.
+  if (!isHideEnabled()) {
     return;
   }
-  const choice = await vscode.window.showInformationMessage(
-    "PythonTA Checker: hide Pylance and basedpyright problems so only PythonTA's show? Autocomplete keeps working. Change it later with 'PythonTA: Toggle Only-PythonTA Problems'.",
-    'Yes',
-    'No',
-  );
-  if (choice !== 'Yes' && choice !== 'No') {
+  // A refused write or a workspace value that outranks ours leaves the other problems
+  // on screen, so the notice would be describing something that did not happen. The
+  // next window still owes it.
+  if (outcome === undefined || outcome.failed > 0 || outcome.blocked.length > 0) {
     return;
   }
-  // The prompt can sit open while the toggle changes the same setting, so the answer
-  // is compared against the value now rather than the one read above.
-  const wanted = choice === 'Yes';
-  if (isHideEnabled() === wanted) {
-    return;
+  // Recorded before the message goes up, or a second window opening while it sits
+  // there shows a second copy.
+  await context.globalState.update(NOTICE_KEY, true);
+  const choice = await vscode.window.showInformationMessage(NOTICE, SHOW_AGAIN);
+  if (choice === SHOW_AGAIN) {
+    await vscode.commands.executeCommand('pythonta.toggleOnlyPyta');
   }
-  await vscode.workspace.getConfiguration(SECTION).update(SETTING, wanted, vscode.ConfigurationTarget.Global);
 }
 
 let applying: Promise<unknown> = Promise.resolve();
@@ -255,7 +266,7 @@ export async function toggleOnlyPyta(
   log: vscode.LogOutputChannel,
 ): Promise<void> {
   const config = vscode.workspace.getConfiguration(SECTION);
-  const enabled = !config.get<boolean>(SETTING, false);
+  const enabled = !config.get<boolean>(SETTING, true);
   // The configuration event can arrive while the write below is still in flight, so we
   // claim this value first and the listener has nothing left to apply.
   const previous = lastRequested;

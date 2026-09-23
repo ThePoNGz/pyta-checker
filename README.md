@@ -1,92 +1,72 @@
 # PythonTA Checker
 
-See exactly what [PythonTA](https://www.cs.toronto.edu/~david/pyta/) will flag, as squiggles in VS Code, with one click and no `pip install`.
+See exactly what [PythonTA](https://www.cs.toronto.edu/~david/pyta/) will flag, as squiggles in VS Code. One click installs everything, no `pip install`.
 
-Built for University of Toronto courses (CSC108, CSC110/111, CSC148) that grade with PythonTA. Not affiliated with the University of Toronto or the PythonTA maintainers.
+Built for University of Toronto courses that grade with PythonTA. Not affiliated with the University of Toronto or the PythonTA maintainers.
 
 ## Why
 
-- **No install step.** PythonTA and everything it needs ship inside the extension. You need Python 3.10 or newer on your machine, which the course already requires, and nothing else.
-- **Matches the grader.** Course starter files end with `python_ta.check_all(config={...})`. This extension reads that block and applies the same config, so you do not get false positives like "forbidden import random" that the grader would never report.
-- **Only PythonTA, if you want.** Optionally hide Pylance and basedpyright problems so the Problems panel shows one source of truth. Autocomplete keeps working.
-- **Never runs your file.** Files are parsed, not executed. A PythonTA config file can run code through pylint's `init-hook`, which is one reason the extension only activates in a trusted workspace.
+- **No install step.** PythonTA and everything it needs ship inside the extension. You only need Python 3.10 or newer, which the course already requires.
+- **Matches the grader.** Course starter files end with `python_ta.check_all(config={...})`. The extension reads that block and applies the same config, so you don't get false positives like "forbidden import random" that the grader would never report.
+- **Only PythonTA.** By default, Pylance and basedpyright problems are hidden so the Problems panel shows one source of truth and nothing overlaps. Autocomplete keeps working. One command turns it back.
+- **Never runs your file.** Files are parsed, not executed.
 
 ## Install
 
-1. Install [Python 3.10+](https://www.python.org/downloads/) if you have not already.
-2. Install **PythonTA Checker** from the VS Code Marketplace. The Python extension is installed with it automatically.
-3. Open a `.py` file. Problems appear on open and on save. Click the `PyTA` item in the status bar to re-check.
+1. Install [Python 3.10+](https://www.python.org/downloads/) if you haven't already.
+2. Install **PythonTA Checker** from the VS Code Marketplace. The Python extension comes with it.
+3. Problems appear when you open or save a file. With autosave on, they refresh about a second after you stop typing. Click **PyTA** on the bottom status bar to re-check.
 
-The extension only activates in a trusted workspace (VS Code asks you to trust a folder the first time you open it).
+**The extension only works in a trusted workspace.** VS Code asks you to trust a folder the first time you open it.
 
-If nothing appears, open **View > Output** and pick **PythonTA** from the dropdown. The log says which Python was found and what the server did. If the file's config (embedded or `pythonta.configPath`) has a problem PythonTA complains about, that shows as an information message on line 1 naming the config file, so a broken config never fails silently.
+## Reading the squiggles
+
+- **Red** is a PythonTA error. **Yellow** is everything else: warnings, style and convention messages. The grader reports both.
+- Hover a squiggle and click the code (for example `E9999`) to open the PythonTA page for that message. It explains what is wrong and how to fix it.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| PythonTA: Check Current File (`Ctrl+Alt+T` on Windows, `Cmd+Alt+T` on macOS, `Ctrl+Alt+Shift+T` on Linux) | Save and check the active file now. |
-| PythonTA: Toggle Only-PythonTA Problems | Hide or show Pylance/basedpyright problems. |
-| PythonTA: Restart Server | Restart the language server (for example after installing a different Python). |
+| PythonTA: Check Current File (`Ctrl+Alt+T`, `Cmd+Alt+T` on macOS, `Ctrl+Alt+Shift+T` on Linux) | Save and check the current file now. |
+| PythonTA: Toggle Only-PythonTA Problems | Show or hide Pylance and basedpyright problems. |
+| PythonTA: Restart Server | Restart the checker, for example after installing a different Python. |
 | PythonTA: Show Output Log | Open the PythonTA log. |
 
 ## Settings
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
+| `pythonta.hideOtherPythonDiagnostics` | `true` | Hide Pylance and basedpyright problems. Use the toggle command rather than editing this by hand. |
 | `pythonta.runOnSave` | `true` | Check a file each time it is saved. |
 | `pythonta.runOnOpen` | `true` | Check a file when it is opened. |
-| `pythonta.configPath` | `""` | PythonTA config file used when the file has no embedded `check_all(config=...)`. Relative to the workspace folder. |
-| `pythonta.importStrategy` | `useBundled` | `useBundled` runs the PythonTA inside the extension. `fromEnvironment` prefers the PythonTA installed in your selected interpreter and falls back to the bundled one. |
-| `pythonta.interpreter` | `""` | Absolute path to a Python executable; overrides the Python extension's selection. |
-| `pythonta.hideOtherPythonDiagnostics` | `false` | Managed by the toggle command. When true, `python.analysis.ignore` and `basedpyright.analysis.ignore` are set to `["**"]` in your user settings; turning it off restores the previous values. VS Code has no uninstall hook, so if you uninstall the extension while this is on, those settings keep the `["**"]` value; turn the toggle off first, or remove the two `analysis.ignore` entries from `settings.json` by hand. |
-| `pythonta.trace.server` | `off` | Language server tracing. |
+| `pythonta.configPath` | `""` | PythonTA config file to use when the file has no `check_all(config=...)` of its own. Relative to the workspace folder. |
+| `pythonta.importStrategy` | `useBundled` | `useBundled` uses the PythonTA inside the extension. `fromEnvironment` prefers the PythonTA installed in your selected interpreter. |
+| `pythonta.interpreter` | `""` | Path to a Python executable, if you want to override the one the Python extension picked. |
 
-## How the config is found
-
-For each file, in order:
-
-1. The `config=` keyword argument of the first `check_all(...)` or `check_errors(...)` call in the file. A dict literal is used directly; a string is a path relative to the file.
-2. `pythonta.configPath`, if set.
-3. PythonTA's defaults.
-
-Severity: PythonTA "error" messages are red, everything else (warning, refactor, convention) is yellow. Every message links to its documentation; codes not on the PythonTA page link to pylint's docs.
+If you uninstall the extension while Only PythonTA is on, Pylance problems stay hidden, because VS Code gives extensions no chance to clean up. Run the toggle command first, or delete the two `analysis.ignore` lines from your `settings.json`.
 
 ## Other editors
 
-The checker is a standalone language server. With the Python package from `server/` installed (`pip install ./server`), `python -m pyta_lsp` speaks LSP over stdio and can be wired into Zed, Neovim, or Helix. A PyPI release and a Zed extension are planned.
+I don't use VS Code anymore, I use Zed, so the next step is a Zed extension. Other editors after that. The checker is a standalone language server (`python -m pyta_lsp` over stdio), so any editor that speaks LSP can use it already. If you want a specific editor, open a GitHub issue.
 
-## Development
+## Troubleshooting
 
-The language server lives in `server/pyta_lsp` and speaks LSP over stdio (`python -m pyta_lsp`), so it can be used from any LSP-capable editor, not only VS Code.
+If nothing appears, open **View > Output** and pick **PythonTA** from the dropdown. The log says which Python was found and what the checker did.
+
+If the course config has a problem PythonTA complains about, you get an information message on line 1 naming the config file, so a broken config never fails silently.
+
+Still stuck? [Open an issue](https://github.com/ThePoNGz/pyta-checker/issues) with the log and the file.
+
+## Contributing
 
 ```bash
 python -m venv .venv
 .venv/Scripts/python -m pip install -e "server[dev]"     # POSIX: .venv/bin/python
-.venv/Scripts/python -m pytest server/tests -q
-npm ci
-npm test                                                 # type-check, lint, unit tests
-.venv/Scripts/python scripts/bundle.py build             # builds bundled/libs (needed to run the extension)
-npm run test:integration                                 # launches VS Code against test/fixtures
+.venv/Scripts/python scripts/bundle.py build             # builds bundled/libs, needed to run the extension
+npm ci && npm test                                       # type-check, lint, unit tests
+.venv/Scripts/python -m pytest server/tests -q           # server tests
 ```
-
-`npm run test:integration` requires `bundled/libs` to exist first; a `pretest:integration` guard checks for it and fails fast with the build command above if it is missing.
-
-Press F5 in VS Code to run the extension against `test/fixtures`.
-
-Update PythonTA: change the pin in `server/requirements.in`, run `python scripts/bundle.py lock` then `build`, run the tests, commit the lockfile and `THIRD_PARTY_NOTICES.md`.
-
-## Releasing
-
-1. Bump `version` in `package.json`, `server/pyproject.toml`, and `server/pyta_lsp/__init__.py`, update `CHANGELOG.md`, commit.
-2. `git tag vX.Y.Z && git push --tags`. The release workflow builds the VSIX, attaches it to a GitHub release, and publishes to the Marketplace.
-
-Marketplace publishing needs a one-time setup by the repository owner:
-
-- Create a publisher at https://marketplace.visualstudio.com/manage with ID `ThePoNGz` (must equal `publisher` in `package.json`).
-- Either configure trusted publishing for this repository's `release.yml` in the publisher settings and set the repository variable `VSCE_USE_OIDC` to `true`, or create an Azure DevOps personal access token (organization: all accessible organizations; scope: Marketplace > Manage) and store it as the repository secret `VSCE_PAT`. Personal access tokens are being retired by the Marketplace at the end of 2026, so trusted publishing is preferred.
-
-Without either, the workflow still attaches the VSIX to the GitHub release, which users can install with `code --install-extension`.
 
 ## License
 

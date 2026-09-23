@@ -22,7 +22,7 @@ export function getSettings(): PytaSettings {
     configPath: config.get<string>('configPath', ''),
     importStrategy: strategy === 'fromEnvironment' ? 'fromEnvironment' : 'useBundled',
     interpreter: config.get<string>('interpreter', ''),
-    hideOtherPythonDiagnostics: config.get<boolean>('hideOtherPythonDiagnostics', false),
+    hideOtherPythonDiagnostics: config.get<boolean>('hideOtherPythonDiagnostics', true),
   };
 }
 
