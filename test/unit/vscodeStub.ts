@@ -1,4 +1,4 @@
-/** Stand-in for the vscode module so the settings-writing code can run under vitest. */
+/** Stand in for the vscode module so the settings writing code can run under vitest. */
 
 export enum ConfigurationTarget {
   Global = 1,
@@ -17,9 +17,9 @@ interface StubState {
   rejects: Record<string, string>;
   /** Values set at workspace scope, which outrank anything written globally. */
   scoped: Record<string, unknown>;
-  /** Values set in one folder's .vscode/settings.json, keyed by folder uri then "section.key". */
+  /** Values set in a folder .vscode/settings.json, keyed by folder uri then "section.key". */
   folders: Record<string, Record<string, unknown>>;
-  /** The roots of a multi-root workspace; undefined when no folder is open. */
+  /** The roots of a multi root workspace, undefined when no folder is open. */
   workspaceFolders: StubFolder[] | undefined;
   commands: string[];
   /** Command callbacks, by id, so a test can invoke what the extension registered. */

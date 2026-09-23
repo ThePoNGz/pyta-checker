@@ -1,3 +1,5 @@
+// Interpreter discovery. Asks the setting, then the Python extension, then PATH, and
+// says something when the interpreter the user picked could not be used.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { PythonExtension } from '@vscode/python-extension';
@@ -28,6 +30,13 @@ async function pythonExtensionCandidate(log: vscode.LogOutputChannel): Promise<C
   return undefined;
 }
 
+/**
+ * Find the first interpreter that runs and is new enough.
+ *
+ * @param settingPath pythonta.interpreter, empty string when the user set nothing
+ * @param log the PythonTA output channel
+ * @returns the chosen interpreter, or an error string listing what was tried
+ */
 export async function findPython(settingPath: string, log: vscode.LogOutputChannel): Promise<PythonInfo | { error: string }> {
   const candidates: Candidate[] = [];
   if (settingPath) {
@@ -61,7 +70,7 @@ let warnedFallback = false;
 function reportFallback(configuredPath: string, reason: string, used: string, log: vscode.LogOutputChannel): void {
   const message = `PythonTA: the interpreter set in pythonta.interpreter (${configuredPath}) could not be used (${reason}). Using ${used} instead.`;
   log.warn(message);
-  // Every restart re-runs discovery, so this is worth saying once a session.
+  // Every restart runs discovery again, so this is worth saying once a session.
   if (warnedFallback) {
     return;
   }

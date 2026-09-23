@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// findPython keeps the once-per-session flag at module scope, so both it and the stub
-// are re-imported per test.
+// findPython keeps the once per session flag at module scope, so both it and the stub
+// get re-imported per test.
 type Python = typeof import('../../src/python');
 type Stub = typeof import('./vscodeStub');
 type Log = Parameters<Python['findPython']>[1];
@@ -24,7 +24,7 @@ vi.mock('node:child_process', () => ({
   },
 }));
 
-// No Python extension in a unit test; findPython falls back to PATH on its own.
+// No Python extension in a unit test, so findPython falls back to PATH on its own.
 vi.mock('@vscode/python-extension', () => ({
   PythonExtension: {
     api: async () => {

@@ -1,3 +1,4 @@
+// Sets up the language client that talks to the pyta_lsp server, and the check request.
 import * as vscode from 'vscode';
 import {
   ExecuteCommandRequest,

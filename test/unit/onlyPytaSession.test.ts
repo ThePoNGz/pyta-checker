@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// The session state these tests cover (the once-per-session warning, the state the
-// toggle has already applied) lives at module scope, so both modules are re-imported
-// per test - the stub included, or the module under test would see a second copy.
+// The session state these tests cover (the once per session warning, the state the
+// toggle has already applied) lives at module scope, so both modules get re-imported
+// per test. The stub included, or the module under test would see a second copy.
 type OnlyPyta = typeof import('../../src/onlyPyta');
 type Stub = typeof import('./vscodeStub');
 type Context = Parameters<OnlyPyta['applyOnlyPyta']>[1];
@@ -41,7 +41,7 @@ beforeEach(async () => {
 
 describe('re-applying an enable that is already in place', () => {
   it('writes nothing and restarts nothing when both settings already hold the sentinel', async () => {
-    // Activation re-applies on every window open. Rewriting settings that already
+    // Activation applies again on every window open. Rewriting settings that already
     // hold the sentinel restarts Pylance from scratch every time, forever.
     const context = fakeContext();
     await onlyPyta.applyOnlyPyta(true, context, log);
@@ -118,7 +118,7 @@ describe('toggleOnlyPyta', () => {
     const context = fakeContext();
     await onlyPyta.toggleOnlyPyta(context, log);
 
-    // extension.ts routes the onDidChangeConfiguration event here; the toggle has
+    // extension.ts routes the onDidChangeConfiguration event here. The toggle has
     // already applied this value, so there is nothing left to do.
     expect(await onlyPyta.syncOnlyPyta(true, context, log)).toBeUndefined();
   });
@@ -149,7 +149,7 @@ describe('toggleOnlyPyta', () => {
 
 describe('maybePromptFirstRun', () => {
   it('does not ask again on a second machine where the setting synced across', async () => {
-    // hideOtherPythonDiagnostics travels with Settings Sync; the prompted flag in
+    // hideOtherPythonDiagnostics travels with Settings Sync but the prompted flag in
     // globalState does not.
     stub.state.values['pythonta.hideOtherPythonDiagnostics'] = true;
     const context = fakeContext();
@@ -184,8 +184,8 @@ describe('maybePromptFirstRun', () => {
 
 describe('toggle off under a workspace override', () => {
   it('says the problems stay hidden instead of claiming they are visible again', async () => {
-    // A workspace analysis.ignore outranks the restored user value in both
-    // directions: the global restore lands, and the other server keeps ignoring.
+    // A workspace analysis.ignore outranks the restored user value in both directions,
+    // so the global restore lands and the other server keeps ignoring.
     const context = fakeContext();
     await onlyPyta.toggleOnlyPyta(context, log);
     stub.state.info.length = 0;
@@ -201,7 +201,7 @@ describe('toggle off under a workspace override', () => {
 
 describe('a value in a scope that outranks the user setting', () => {
   // Our global write only matters if it changes the effective value, so what blocks
-  // depends on the direction: the sentinel hides everything, anything else does not.
+  // depends on the direction. The sentinel hides everything, anything else does not.
   it('does not block an enable with a workspace copy of our sentinel, which hides them too', async () => {
     stub.state.scoped['python.analysis.ignore'] = IGNORE_ALL;
 

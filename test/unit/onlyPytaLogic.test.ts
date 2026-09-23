@@ -47,8 +47,8 @@ describe('planEnable', () => {
 
   it('records a value the user set while Only-PythonTA was on', () => {
     // A real value on disk can only have come from the user, so it replaces what we
-    // recorded - otherwise a window reload re-asserts the sentinel over their edit
-    // and disabling later hands back the value from two edits ago.
+    // recorded. Otherwise a window reload puts the sentinel back over their edit and
+    // disabling later hands back the value from two edits ago.
     const plan = planEnable({ python: ['new'], basedpyright: IGNORE_ALL }, { python: ['old'], basedpyright: ['b'] });
     expect(plan.saved).toEqual({ python: ['new'], basedpyright: ['b'] });
   });
@@ -75,7 +75,7 @@ describe('planDisable', () => {
   it('removes a sentinel no snapshot accounts for', () => {
     // A reinstall, or Settings Sync carrying the setting without the snapshot. The
     // sentinel is never a value we owe back, so it comes out and the setting is left
-    // absent; leaving it would keep the other linters silent with nothing to undo it.
+    // absent. Leaving it would keep the other linters silent with nothing to undo it.
     expect(planDisable(undefined, { python: IGNORE_ALL, basedpyright: IGNORE_ALL })).toEqual([
       { section: 'python', key: 'analysis.ignore', value: undefined },
       { section: 'basedpyright', key: 'analysis.ignore', value: undefined },
@@ -83,8 +83,8 @@ describe('planDisable', () => {
   });
 
   it('skips a section that no longer holds our sentinel', () => {
-    // Either our write never landed or the user has changed it since. Either way
-    // the value on disk is theirs, not ours to write over.
+    // Either our write never landed or the user changed it since. Either way the
+    // value on disk is theirs, not ours to write over.
     expect(
       planDisable({ python: ['p'], basedpyright: ['b'] }, { python: ['theirs'], basedpyright: IGNORE_ALL }),
     ).toEqual([{ section: 'basedpyright', key: 'analysis.ignore', value: ['b'] }]);
@@ -107,7 +107,7 @@ describe('isUnregisteredSettingError', () => {
   });
 
   it('does not excuse a real write failure', () => {
-    // A read-only or malformed settings.json must keep the snapshot alive.
+    // A read only or malformed settings.json must keep the snapshot alive.
     expect(isUnregisteredSettingError(new Error('EACCES: permission denied, open settings.json'))).toBe(false);
   });
 });

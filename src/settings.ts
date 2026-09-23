@@ -1,3 +1,4 @@
+// Reads the pythonta.* settings and picks out the subset the server needs.
 import * as vscode from 'vscode';
 import type { ImportStrategy } from './serverEnv';
 

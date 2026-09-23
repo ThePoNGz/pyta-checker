@@ -1,3 +1,5 @@
+// The Python version floor, plus the probe we run and the parsing around it.
+
 export const MIN_PYTHON: readonly [number, number] = [3, 10];
 export const VERSION_PROBE = "import sys; print('%d.%d' % sys.version_info[:2])";
 

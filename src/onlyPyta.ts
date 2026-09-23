@@ -1,3 +1,5 @@
+// Only-PythonTA. Writes the ignore setting of the other Python extensions so their
+// problems stay off screen, and hands the original values back when it is turned off.
 import * as vscode from 'vscode';
 import {
   TARGETS,
@@ -17,8 +19,9 @@ export const PROMPTED_KEY = 'pythonta.promptedOnlyPyta';
 const SETTING = 'hideOtherPythonDiagnostics';
 const SHOW_OUTPUT = 'Show Output';
 
+/** What one apply cycle actually managed to do. */
 export interface ApplyOutcome {
-  /** Writes that changed something; nothing else is worth a language-server restart. */
+  /** Writes that changed something. Nothing else is worth a language server restart. */
   landed: number;
   /** Writes refused for a reason other than the target extension being absent. */
   failed: number;
@@ -27,7 +30,7 @@ export interface ApplyOutcome {
 }
 
 export interface ApplyOptions {
-  /** Activation and the toggle report for themselves. */
+  /** Activation and the toggle report for themselves, so they ask for no toast here. */
   silent?: boolean;
 }
 
@@ -66,6 +69,15 @@ let applying: Promise<unknown> = Promise.resolve();
 let lastRequested: boolean | undefined;
 let warnedScoped = false;
 
+/**
+ * Queue one enable or disable cycle behind whatever is already running.
+ *
+ * @param enabled true to hide the other problems, false to hand the settings back
+ * @param context gives us the globalState that holds the snapshot of the saved values
+ * @param log the PythonTA output channel
+ * @param options pass silent when the caller reports the result itself
+ * @returns what the cycle landed, refused and could not reach
+ */
 export function applyOnlyPyta(
   enabled: boolean,
   context: vscode.ExtensionContext,
@@ -78,7 +90,7 @@ export function applyOnlyPyta(
   return next;
 }
 
-/** The configuration listener also fires for the toggle's own write, which has already been applied. */
+/** The configuration listener also fires for the write the toggle already applied. */
 export function syncOnlyPyta(
   enabled: boolean,
   context: vscode.ExtensionContext,
@@ -101,16 +113,16 @@ async function applyOnlyPytaNow(
   let writes: Write[];
   let owed: Snapshot;
   let claiming: Set<string>;
-  // A cycle that overwrites nothing owes nothing, so it must leave the snapshot to
-  // whichever window or machine did the writing. Recording "absent" here instead is
-  // what makes a later disable delete the user's value rather than restore it.
+  // A cycle that overwrites nothing owes nothing, so it leaves the snapshot to
+  // whichever window or machine did the writing. Recording "absent" here is what
+  // makes a later disable wipe what the user had instead of restoring it.
   let records = true;
   if (enabled) {
     const plan = planEnable(current, saved);
     writes = plan.writes;
     records = writes.length > 0;
-    // Written before the overwrites so a crash mid-loop cannot lose the originals;
-    // reconciled against what actually landed once the loop is done.
+    // Written before the overwrites so a crash mid loop cannot lose the originals. We
+    // reconcile it against what actually landed once the loop is done.
     if (records) {
       await context.globalState.update(SAVED_KEY, plan.saved);
     }
@@ -118,7 +130,7 @@ async function applyOnlyPytaNow(
     claiming = records ? newlyClaimed(saved, plan.saved) : new Set();
   } else {
     writes = planDisable(saved, current);
-    // Anything the snapshot claims but planDisable declined is the user's again.
+    // Anything the snapshot claims but planDisable declined belongs to the user again.
     owed = Object.fromEntries(writes.map((w) => [w.section, saved?.[w.section]]));
     claiming = new Set();
   }
@@ -146,9 +158,9 @@ async function applyOnlyPytaNow(
       }
     }
   }
-  // The snapshot is the only record of the user's original values: it holds exactly
-  // the settings we have overwritten and still owe back. A failure here can only
-  // leave it over-claiming, which planDisable filters out, so it is not fatal.
+  // The snapshot is the only record of the original values, it holds exactly the
+  // settings we overwrote and still owe back. A failure here can only leave it over
+  // claiming, which planDisable filters out, so it is not fatal.
   if (records) {
     try {
       await context.globalState.update(SAVED_KEY, Object.keys(owed).length > 0 ? owed : undefined);
@@ -177,9 +189,9 @@ async function applyOnlyPytaNow(
 
 /**
  * Global writes lose to a workspace or folder value, so the toggle can silently do
- * nothing - but only when the winning value leaves the problems on the wrong side of
- * what we just asked for. Our sentinel hides everything, so a copy of it in a higher
- * scope carries an enable and blocks a disable; any other value is the mirror image.
+ * nothing. That only matters when the winning value leaves the problems on the wrong
+ * side of what we just asked for. Our sentinel hides everything, so a copy of it in a
+ * higher scope carries an enable and blocks a disable. Any other value is the reverse.
  */
 function scopedOverrides(enabled: boolean): string[] {
   return TARGETS.filter((target) =>
@@ -187,7 +199,7 @@ function scopedOverrides(enabled: boolean): string[] {
   ).map((target) => `${target.section}.${target.key}`);
 }
 
-/** A folder's .vscode/settings.json is invisible to an inspect with no resource. */
+/** The .vscode/settings.json inside a folder is invisible to an inspect with no resource. */
 function higherScopeValues(target: Target): unknown[] {
   const found: unknown[] = [];
   const collect = (resource?: vscode.Uri): void => {
@@ -244,8 +256,8 @@ export async function toggleOnlyPyta(
 ): Promise<void> {
   const config = vscode.workspace.getConfiguration(SECTION);
   const enabled = !config.get<boolean>(SETTING, false);
-  // The configuration event can arrive while the write below is still in flight, so
-  // this value is claimed before it: the listener then has nothing left to apply.
+  // The configuration event can arrive while the write below is still in flight, so we
+  // claim this value first and the listener has nothing left to apply.
   const previous = lastRequested;
   lastRequested = enabled;
   try {
