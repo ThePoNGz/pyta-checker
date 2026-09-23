@@ -4,7 +4,7 @@ import { codeOf, openFixture, pytaDiagnostics, waitForPytaDiagnostics } from './
 
 suite('PythonTA Checker', () => {
   suiteSetup(async () => {
-    const extension = vscode.extensions.getExtension('ThePoNGz.pyta-checker');
+    const extension = vscode.extensions.getExtension('ThePong.pyta-checker');
     assert.ok(extension, 'extension not found; check publisher/name in package.json');
     await extension.activate();
   });

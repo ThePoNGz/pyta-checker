@@ -3,7 +3,7 @@
   "displayName": "PythonTA Checker",
   "description": "One-click PythonTA checks: see exactly what python_ta will flag, with PythonTA bundled in. No pip install needed.",
   "version": "0.1.0",
-  "publisher": "ThePoNGz",
+  "publisher": "ThePong",
   "license": "MIT",
   "repository": {
     "type": "git",
