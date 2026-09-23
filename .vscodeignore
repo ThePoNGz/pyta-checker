@@ -3,13 +3,11 @@
 .vscode-test.mjs
 .github/**
 .superpowers/**
-greptile.json
 src/**
 server/**
 scripts/**
 test/**
 out/**
-docs/**
 node_modules/**
 bundled/libs/**/__pycache__/**
 **/.mypy_cache/**
