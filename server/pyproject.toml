@@ -6,7 +6,6 @@ build-backend = "hatchling.build"
 name = "pyta-lsp"
 version = "0.1.0"
 description = "Language server for PythonTA that honors the check_all(config=...) block embedded in course files"
-readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
