@@ -1,3 +1,4 @@
+// Builds the environment the language server subprocess runs in.
 import * as path from 'node:path';
 
 export type ImportStrategy = 'useBundled' | 'fromEnvironment';
@@ -21,8 +22,8 @@ export function serverEnv(
     PYTA_LSP_LIBS: libs,
     PYTA_LSP_IMPORT_STRATEGY: importStrategy,
   };
-  // Inherited from whatever shell launched VS Code, these point at an environment
-  // that is not the selected interpreter and outrank it.
+  // These come from whatever shell launched VS Code. They point at an environment that
+  // is not the selected interpreter and they outrank it.
   for (const key of ['PYTHONHOME', 'VIRTUAL_ENV', 'CONDA_PREFIX', 'PYTHONSTARTUP']) {
     delete env[key];
   }

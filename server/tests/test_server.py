@@ -164,7 +164,7 @@ def _open_params(uri: str):
 def test_automatic_checks_do_not_occupy_a_protocol_worker() -> None:
     # The pygls worker pool also serves the stdin reader, so a burst of opens that
     # each block a worker until their subprocess finishes stalls every later
-    # message - close, shutdown, configuration - behind them.
+    # message behind them, close and shutdown and configuration alike.
     import threading
     import time
 
@@ -307,9 +307,9 @@ def _frame(payload: dict) -> bytes:
 
 
 def test_the_server_exits_while_checks_are_in_flight() -> None:
-    # The check pool's threads are not daemons, so the interpreter joins them on the
-    # way out. A thread parked on a 60-second subprocess wait therefore holds the
-    # whole process open, and closing a window mid-check orphans it with its mypy.
+    # Threads in the check pool arent daemons, so the interpreter joins them on the
+    # way out. A thread parked on a 60 second subprocess wait therefore holds the
+    # whole process open, and closing a window mid check orphans it with its mypy.
     import os
     import subprocess
 
@@ -318,7 +318,7 @@ def test_the_server_exits_while_checks_are_in_flight() -> None:
     proc = subprocess.Popen(
         [sys.executable, "-m", "pyta_lsp"],
         stdin=subprocess.PIPE,
-        # The runner subprocesses inherit these, so a pipe would keep the parent's
+        # The runner subprocesses inherit these, so a pipe would keep the parent
         # communicate() blocked long after the server itself is gone.
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -523,8 +523,8 @@ def test_closing_a_file_clears_its_diagnostics_before_the_kill_waits() -> None:
 
 
 async def test_a_broken_course_config_is_visible_on_the_checked_file(client: LanguageClient, tmp_path) -> None:
-    # The config's own messages must not be squiggled as if they were the
-    # student's, but a config that fails to parse must not be silent either.
+    # Config file messages must not be squiggled as if the student wrote them, but a
+    # config that fails to parse must not be silent either.
     (tmp_path / "cfg.txt").write_text("[MESSAGES CONTROL]\ndisable=not-a-real-message\n", encoding="utf-8")
     path = tmp_path / "a1.py"
     path.write_text(
@@ -577,9 +577,9 @@ def _captured_spawn(ls) -> list:
 
 def test_the_runner_is_spawned_where_no_student_file_can_be_imported(tmp_path) -> None:
     # sys.path[0] for `python -m` is the spawn directory, so on 3.10, where
-    # PYTHONSAFEPATH does not exist, the cwd is what a student's string.py rides in
+    # PYTHONSAFEPATH does not exist, the cwd is what a student string.py rides in
     # on. With the copy in the spawn directory itself, a file named random.py was
-    # exactly that; it goes one level down, and the spawn directory holds nothing
+    # exactly that, so it goes one level down and the spawn directory holds nothing
     # else.
     import os
 
@@ -630,7 +630,7 @@ def test_the_runner_env_keeps_the_spawn_directory_off_sys_path() -> None:
 async def test_a_staged_check_sees_the_course_config_beside_the_file(
     client: LanguageClient, tmp_path
 ) -> None:
-    # PythonTA's reset_linter loads config/.pylintrc from beside the file it is
+    # reset_linter in PythonTA loads config/.pylintrc from beside the file it is
     # given. The staged copy sits in a temp directory that has none, so the
     # extension checked the student against a config their own run never uses.
     (tmp_path / "config").mkdir()
@@ -684,8 +684,8 @@ async def test_a_non_utf8_cookie_does_not_survive_into_the_utf8_staged_copy(
 ) -> None:
     # The copy is written as UTF-8. A cp1252 cookie riding along makes the
     # tokenizer decode those bytes as cp1252, so every non-ASCII character counts
-    # twice: a 79-character line becomes 85 and C0301 appears on a line the
-    # student's own run never complains about.
+    # twice, so a 79 character line becomes 85 and C0301 appears on a line a student
+    # run never complains about.
     body = '"""Doc."""\n' + _COOKIE_LINE + "\nprint(NOM)\n"
     results = {}
     for name, cookie in (("cp1252.py", "cp1252"), ("utf8.py", "utf-8")):
@@ -800,7 +800,7 @@ async def test_a_form_feed_does_not_shift_every_later_column(
 ) -> None:
     # doc.lines is str.splitlines, which counts \x0c as a line break. The tokenizer
     # does not, so every message after one is mapped against the wrong line and its
-    # column collapses to that line's length.
+    # column collapses to the length of that line.
     source = '"""Doc."""\n# note\x0cmore\nNAME = 1\n\nOTHER = NAME+1\nprint(OTHER)\n'
     path = tmp_path / "a1.py"
     path.write_text(source, encoding="utf-8")
@@ -910,7 +910,7 @@ def test_a_config_copy_that_dies_midway_stages_nothing(tmp_path, monkeypatch) ->
 
 
 class _LockThatHooksItsRelease:
-    """Runs a hook the first time the scheduler's lock is let go."""
+    """Runs a hook the first time the scheduler lock is let go."""
 
     def __init__(self, lock, hook) -> None:
         self._lock = lock
@@ -970,10 +970,10 @@ def test_a_failure_is_not_published_onto_a_document_that_was_just_closed(tmp_pat
 async def test_a_course_config_that_cannot_be_staged_does_not_lose_the_check(
     client: LanguageClient, tmp_path
 ) -> None:
-    # os.mkdir and copyfile both fail on things a student's folder really holds:
-    # a config/.pylintrc that is a directory, a read-only file, a full disk. The
-    # OSError reached the failure guard, so a file that used to be checked with
-    # the wrong config was not checked at all.
+    # os.mkdir and copyfile both fail on things a student folder really holds, like
+    # a config/.pylintrc that is a directory, a read only file or a full disk. The
+    # OSError reached the failure guard, so a file that used to be checked with the
+    # wrong config was not checked at all.
     from pyta_lsp.diagnostics import FAILURE_CODE
 
     (tmp_path / "config").mkdir()
@@ -1003,8 +1003,8 @@ async def test_a_course_config_that_cannot_be_staged_does_not_lose_the_check(
 def test_a_cookie_is_only_looked_for_in_the_first_two_real_lines() -> None:
     # Splitting on "\n" makes a CR-only buffer one line, so the cookie pattern
     # scans the whole file and rewrites the first "coding=" it finds anywhere.
-    # A student's own encoding=enc then became encoding=utf-8 and the check
-    # reported an E0602 their own run never does.
+    # An encoding=enc written by the student then became encoding=utf-8 and the
+    # check reported an E0602 their own run never does.
     from pyta_lsp.server import normalise_coding_cookie
 
     unchanged = "# note\rX = 1\rencoding=enc\rprint(encoding)\r"
@@ -1031,8 +1031,8 @@ def test_a_buffer_behind_a_bom_is_left_alone() -> None:
 def test_a_staged_file_named_after_a_stdlib_module_is_not_imported(tmp_path) -> None:
     # On 3.10 PYTHONSAFEPATH does nothing, so the spawn directory is sys.path[0]
     # for the runner and for the mypy it starts. A staged copy named random.py
-    # sitting there was imported and executed on every save; the environment here
-    # is the one 3.10 gives us.
+    # sitting there was imported and executed on every save. The environment here is
+    # the one 3.10 gives us.
     import os
     import subprocess
 

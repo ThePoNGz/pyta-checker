@@ -58,6 +58,8 @@ The checker is a standalone language server. With the Python package from `serve
 
 ## Development
 
+The language server lives in `server/pyta_lsp` and speaks LSP over stdio (`python -m pyta_lsp`), so it can be used from any LSP-capable editor, not only VS Code.
+
 ```bash
 python -m venv .venv
 .venv/Scripts/python -m pip install -e "server[dev]"     # POSIX: .venv/bin/python

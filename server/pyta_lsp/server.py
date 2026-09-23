@@ -36,12 +36,21 @@ CONFIG_SECTION = "pythonta"
 
 @dataclass
 class Settings:
+    """The client settings we honour.
+
+    Attributes:
+        run_on_save: check a file every time it gets saved.
+        run_on_open: check a file every time it gets opened.
+        config_path: config file from settings, used when the file asks for nothing.
+    """
+
     run_on_save: bool = True
     run_on_open: bool = True
     config_path: str = ""
 
     @classmethod
     def from_dict(cls, data: Any) -> "Settings":
+        """Read settings out of whatever the client sent, flat or nested, else defaults."""
         if not isinstance(data, dict):
             return cls()
         section = data.get(CONFIG_SECTION) if isinstance(data.get(CONFIG_SECTION), dict) else data
@@ -53,10 +62,17 @@ class Settings:
 
 
 def select_workspace_root(folders: list[str], path: str) -> str | None:
-    """The folder holding the file, so a relative configPath resolves against it.
+    """The workspace folder holding this file, so a relative configPath resolves against it.
 
-    A multi-root workspace can hold one folder per course, each with its own
-    config; resolving every file against the first folder loads the wrong one.
+    A multi root workspace can hold one folder per course, each with a config of its
+    own, so resolving every file against the first folder loads the wrong one.
+
+    Args:
+        folders: the open workspace folders.
+        path: the file being checked.
+
+    Returns:
+        The deepest folder the file sits in, or the first folder when it sits in none.
     """
     if not folders:
         return None
@@ -72,7 +88,7 @@ def select_workspace_root(folders: list[str], path: str) -> str | None:
 
 
 def is_package_module(path: str) -> bool:
-    """Whether the file is part of a package, and so cannot be checked from a copy.
+    """Checks if the file is part of a package, which means it cant be checked from a copy.
 
     A copy in a temp directory is not inside the package, so relative imports
     resolve to nothing and PythonTA reports an import error that is not real.
@@ -84,17 +100,17 @@ _COOKIE_RE = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*(?P<name>[-_.a-zA-Z0-9]+)
 
 
 def normalise_coding_cookie(source: str) -> str:
-    """Point a PEP 263 cookie at utf-8, because the staged copy is written as utf-8.
+    """Point a PEP 263 cookie at utf-8, because we write the staged copy as utf-8.
 
-    Left alone, the tokenizer decodes those utf-8 bytes as the declared encoding,
-    so every non-ASCII character counts twice and columns, line lengths and the
-    messages that follow from them are all wrong. Only the encoding name changes,
-    so no line moves and no separator changes.
+    Left alone, the tokenizer decodes those utf-8 bytes as the declared encoding, so
+    every non-ASCII character counts twice and columns, line lengths and the messages
+    that come out of them are all wrong. Only the encoding name changes, so no line
+    moves and no separator changes.
 
-    The split has to be the tokenizer's: on "\\n" alone a CR-only buffer is one
-    line, and the pattern then finds a "coding=" anywhere in the file. A buffer
-    behind a BOM is left as it is; a non-utf-8 cookie there is a SyntaxError
-    before this runs, as it was before.
+    The split has to match the tokenizer. On "\\n" alone a CR only buffer is one line
+    and the pattern would then find a "coding=" anywhere in the file. A buffer behind
+    a BOM is left alone, because a non-utf-8 cookie there is already a SyntaxError
+    before this runs, same as before.
     """
     lines = split_lines(source)
     for index in range(min(2, len(lines))):
@@ -135,11 +151,11 @@ def _one_eol(text: str) -> str:
 
 
 def matches_disk(path: str, source: str) -> bool:
-    """Whether the buffer is what a checker reading the file would see.
+    """Checks if the buffer matches what a file reader would see.
 
-    Line endings are normalised on both sides: the editor presents a document
-    with one EOL whatever the file holds, so a saved file with mixed endings
-    would otherwise look like an unsaved buffer.
+    We normalise line endings on both sides, because the editor shows a document
+    with one EOL whatever the file holds, so a saved file with mixed endings would
+    otherwise look like an unsaved buffer.
     """
     try:
         with open(path, "rb") as handle:
@@ -151,6 +167,15 @@ def matches_disk(path: str, source: str) -> bool:
 
 
 class PytaLanguageServer(LanguageServer):
+    """The language server, running one PythonTA check per open document.
+
+    Attributes:
+        settings: the client settings we honour.
+        scheduler: runs the runner subprocesses and decides which result is current.
+        workspace_folders: the open folders, used to resolve a relative configPath.
+        _checks: the thread pool checks run on, kept away from the pygls pool.
+    """
+
     def __init__(self) -> None:
         super().__init__(name="pyta-lsp", version=__version__, max_workers=12)
         self.settings = Settings()
@@ -173,10 +198,10 @@ class PytaLanguageServer(LanguageServer):
     def stop_checks(self) -> None:
         """Release everything holding the process open.
 
-        The check pool's threads are not daemons, so the interpreter joins them on
-        the way out; one parked on a 60-second subprocess wait keeps the whole
-        server alive after the editor has gone. Killing the subprocesses first is
-        what lets those threads return.
+        Threads in the check pool arent daemons, so the interpreter joins them on the
+        way out, and one parked on a 60 second subprocess wait keeps the whole server
+        alive after the editor is gone. Killing the subprocesses first is what lets
+        those threads return.
         """
         self.scheduler.cancel_all()
         self._checks.shutdown(wait=False, cancel_futures=True)
@@ -199,6 +224,7 @@ class PytaLanguageServer(LanguageServer):
         self.window_log_message(types.LogMessageParams(type=level, message=message))
 
     def check(self, uri: str) -> None:
+        """Check one document and publish whatever comes back, failure included."""
         path = uris.to_fs_path(uri)
         if not path:
             return
@@ -206,8 +232,8 @@ class PytaLanguageServer(LanguageServer):
         if doc.language_id not in (None, "python"):
             return
         self.notify_status(uri, "checking")
-        # Claimed before anything that can fail, so a failure knows whether it is
-        # still this document's newest word.
+        # Claimed before anything that can fail, so a failure can tell whether it is
+        # still the newest word on this document.
         generation = self.scheduler.reserve(uri)
         try:
             self._check(uri, path, doc, generation)
@@ -223,11 +249,16 @@ class PytaLanguageServer(LanguageServer):
     def fail(self, uri: str, generation: int, reason: str) -> None:
         """Report a check that produced nothing, unless a newer one took the file.
 
-        Publishing unguarded let an early failure -- mkdtemp, the staged write --
-        wipe the diagnostics of a check already running on the same document and
-        flip its status bar to done while it was still going. The publish goes
-        inside the guard's own lock, or a did_close between the decision and the
-        publish leaves the failure on a document that is no longer open.
+        Publishing without the guard let an early failure like mkdtemp or the staged
+        write wipe the diagnostics of a check already running on the same document,
+        and flip its status bar to done while it was still going. The publish happens
+        inside the same lock, because a did_close between the decision and the publish
+        leaves the failure on a document that is no longer open.
+
+        Args:
+            uri: the document the failure belongs to.
+            generation: the version ID this check reserved.
+            reason: what went wrong, shown to the user as the diagnostic.
         """
 
         def publish() -> None:
@@ -239,10 +270,18 @@ class PytaLanguageServer(LanguageServer):
         self.scheduler.fail(uri, generation, publish)
 
     def _check(self, uri: str, path: str, doc: Any, generation: int) -> None:
+        """Stage the buffer when we can, spawn the runner, then publish the result.
+
+        Args:
+            uri: the document being checked.
+            path: the file on disk behind that document.
+            doc: the open document, read once for its text.
+            generation: the version ID reserved by check().
+        """
         source_dir = os.path.dirname(path)
         try:
-            # One read: doc.source can hit the disk, and a didChange between two
-            # reads would map this run's messages onto a different text.
+            # One read only, because doc.source can hit the disk and a didChange
+            # between two reads would map these messages onto a different text.
             source: str | None = doc.source
             lines: list[str] | None = split_lines(source)
         except (OSError, UnicodeDecodeError) as exc:
@@ -250,12 +289,12 @@ class PytaLanguageServer(LanguageServer):
             self.log_to_client(
                 f"Could not read {path} for positions: {exc}", types.MessageType.Warning
             )
-        # Staging is what lets a dirty buffer or a non-UTF-8 file be checked at all,
-        # but a package module has to stay where it is.
+        # Staging help test unsaved changes or weird file encodings but actual
+        # package modules cant be moved around.
         stage = source is not None and not is_package_module(path)
         if source is not None and not stage and not matches_disk(path, source):
-            # Nothing correct is available: the buffer cannot be checked where it is,
-            # and the file on disk is not what the student is looking at.
+            # Still unsolved: cant test the open editor buffer as it is, and the file
+            # saved on disk doesnt match what the student sees
             reason = "unsaved changes in a package module cannot be checked; save the file first"
             self.log_to_client(f"{path}: {reason}", types.MessageType.Warning)
             self.fail(uri, generation, reason)
@@ -264,19 +303,19 @@ class PytaLanguageServer(LanguageServer):
         try:
             target = path
             if staging is not None and source is not None:
-                # PythonTA reads the path it is given as UTF-8, and the editor buffer
-                # can differ from disk, so check a UTF-8 copy of what the user sees.
-                # The copy goes one level below the spawn directory: that directory
-                # is sys.path[0] on 3.10, and a copy named random.py or string.py
-                # sitting in it is imported before anything can strip it.
+                # PythonTA assumes files are UTF-8, but the open editor might not match
+                # it, so we test a UTF-8 copy of what the user is looking at. The copy
+                # goes one level below the spawn directory, because that directory is
+                # sys.path[0] on 3.10 and a copy named random.py or string.py sitting
+                # there gets imported before anything can strip it.
                 staged_dir = os.path.join(staging, "staged")
                 os.mkdir(staged_dir)
                 target = os.path.join(staged_dir, os.path.basename(path))
                 with open(target, "w", encoding="utf-8", newline="") as handle:
                     handle.write(normalise_coding_cookie(source))
-                # PythonTA loads config/.pylintrc from beside the file it is given,
-                # so without this the copy is checked against a different config
-                # than the student's own run uses.
+                # PythonTA loads config/.pylintrc from beside the file it is given, so
+                # without this the copy is checked against a different config than the
+                # one a student run would use.
                 local_config = find_local_config(source_dir)
                 if local_config:
                     staged_config = os.path.join(
@@ -291,8 +330,8 @@ class PytaLanguageServer(LanguageServer):
                         # worse answer than the defaults.
                         with contextlib.suppress(OSError):
                             os.remove(staged_config)
-                        # Checking against the wrong config is wrong; not checking
-                        # at all is worse, and that is what raising here meant.
+                        # Checking against the wrong config is bad but not checking
+                        # at all is worse, and raising here meant exactly that.
                         self.log_to_client(
                             f"Could not copy {local_config} beside the staged file: {exc}; "
                             "checking without it",
@@ -305,9 +344,9 @@ class PytaLanguageServer(LanguageServer):
                 if root:
                     argv += ["--workspace-root", root]
             # On 3.10 PYTHONSAFEPATH does nothing, so sys.path[0] is whatever the
-            # runner is spawned in. For a staged check that is the staging root,
-            # which holds one subdirectory and nothing importable; for a package
-            # module, which has to stay put, it is the package directory.
+            # runner is spawned in. For a staged check that is the staging root, which
+            # holds one subdirectory and nothing importable. For a package module,
+            # which has to stay put, it is the package directory.
             spawn_dir = staging if staging is not None else os.path.dirname(target)
             result = self.scheduler.run(uri, argv, spawn_dir, generation)
         finally:
@@ -318,11 +357,11 @@ class PytaLanguageServer(LanguageServer):
         generation = result.pop(GENERATION_KEY)
         if result.get("ok"):
             diagnostics = [to_diagnostic(m, lines) for m in result.get("messages", [])]
-            # The config file's own messages: not the student's to fix, but not silent either.
+            # Config file message is not for the users to fix but it will still display.
             diagnostics.extend(config_diagnostic(m) for m in result.get("elsewhere", []))
-            # Every warning the runner returns comes from reading the student's
-            # own check_all call, and each one means this check used a different
-            # config than that call asks for.
+            # Every warning the runner returns comes from reading the check_all call
+            # in the file, and each one means this check used a different config than
+            # that call asks for.
             for warning in result.get("warnings", []):
                 self.log_to_client(f"{path}: {warning}", types.MessageType.Warning)
                 diagnostics.append(config_warning_diagnostic(warning))
@@ -340,6 +379,7 @@ class PytaLanguageServer(LanguageServer):
         self.scheduler.guard(uri, generation, publish)
 
     def clear(self, uri: str) -> None:
+        """Drop the diagnostics for a document and stop any check still on it."""
         # Publish first: the cancel can wait on taskkill, and a reopen checked in
         # the meantime must not have its results wiped afterwards.
         self.text_document_publish_diagnostics(types.PublishDiagnosticsParams(uri=uri, diagnostics=[]))
@@ -373,15 +413,15 @@ def did_save(ls: PytaLanguageServer, params: types.DidSaveTextDocumentParams) ->
 
 @server.feature(types.SHUTDOWN)
 def on_shutdown(ls: PytaLanguageServer, params: Any = None) -> None:
-    # Not @server.thread(): pygls resumes its own shutdown generator on the worker
-    # thread, where the request id is not in context, and it then cancels the very
-    # request it is answering. The kill goes to a thread of this handler's own,
-    # and __main__ calls stop_checks again once start_io returns.
+    # Not @server.thread(), because pygls resumes its own shutdown generator on the
+    # worker thread where the request id is not in context, and it then cancels the
+    # very request it is answering. The kill goes to a thread this handler owns, and
+    # __main__ calls stop_checks again once start_io returns.
     ls.begin_stop_checks()
 
 
-# Clearing cancels the document's check, and that kill waits on taskkill, which
-# must not happen on the loop that also reads stdin.
+# Clearing cancels the check on that document, and the kill waits on taskkill,
+# which must not happen on the loop that also reads stdin.
 @server.thread()
 @server.feature(types.TEXT_DOCUMENT_DID_CLOSE)
 def did_close(ls: PytaLanguageServer, params: types.DidCloseTextDocumentParams) -> None:

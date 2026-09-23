@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SAVED_KEY } from '../../src/onlyPyta';
 
-// vi.resetModules() below gives extension.ts a fresh copy of the vscode stub, so the
-// stub has to be re-imported with it or the test writes to a second, unused copy.
+// vi.resetModules() below gives extension.ts a fresh copy of the vscode stub, so we
+// have to re-import the stub with it or the test writes to a second, unused copy.
 type Stub = typeof import('./vscodeStub');
 let stub: Stub;
 
@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
   started: [] as string[],
   stopped: [] as string[],
   stopTimeouts: [] as (number | undefined)[],
-  /** Set by a test that needs a client it can drive; the plain fake below otherwise. */
+  /** Set by a test that needs a client it can drive, otherwise the plain fake below. */
   makeClient: undefined as ((pythonPath: string) => unknown) | undefined,
 }));
 
@@ -94,7 +94,7 @@ interface StateEvent {
 
 /**
  * A client that refuses to stop unless it is Running, the way vscode-languageclient
- * does while its own auto-restart after a server crash is still in flight.
+ * does while its own auto restart after a server crash is still in flight.
  */
 function drivableClient(pythonPath: string) {
   const listeners = new Set<(event: StateEvent) => void>();
@@ -169,8 +169,8 @@ describe('extension lifecycle', () => {
   });
 
   it('gives the server long enough to shut its checks down cleanly', async () => {
-    // The default is 2s; a clean shutdown with checks in flight measures ~9.4s,
-    // and timing out leaves the runner and its mypy children behind.
+    // The default is 2s but a clean shutdown with checks in flight takes about 9.4s.
+    // Timing out leaves the runner and its mypy children behind.
     mocks.findPython.mockResolvedValue({ path: 'python' });
 
     await extension.activate(fakeContext());
@@ -262,7 +262,7 @@ describe('stopping a client that refuses to stop', () => {
       const first = clients[0];
       first.transition(State.Starting);
 
-      // A restart now builds a second client; the first one owns a Python process
+      // A restart now builds a second client. The first one owns a Python process
       // that nothing else will ever stop.
       const restart = stub.state.registered['pythonta.restart']?.();
       await vi.advanceTimersByTimeAsync(5_000);
@@ -284,8 +284,8 @@ describe('stopping a client that refuses to stop', () => {
 
 describe('a restart that fails', () => {
   it('runs the pending restart once, not twice on the next one', async () => {
-    // The first restart rejects; the one requested while it was in flight still owes
-    // a run, and must not be left queued for the restart after it.
+    // The first restart rejects. The one requested while it was in flight still owes
+    // a run, and must not be left queued behind the restart after it.
     let failDiscovery!: (error: Error) => void;
     mocks.findPython.mockReturnValueOnce(
       new Promise((_resolve, reject) => {

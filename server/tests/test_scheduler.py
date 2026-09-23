@@ -206,7 +206,7 @@ def test_kill_falls_back_when_taskkill_reports_failure(monkeypatch) -> None:
 def test_mypy_cache_dir_is_per_user(monkeypatch) -> None:
     # /tmp is shared on a lab machine, so a fixed cache directory belongs to
     # whoever created it first and mypy then fails for every other user. PythonTA
-    # ignores mypy's return code, so E9951-E9956 disappear without a word.
+    # ignores the mypy return code, so E9951-E9956 disappear without a word.
     import getpass
 
     from pyta_lsp.scheduler import runner_env
@@ -273,7 +273,7 @@ def test_cancel_all_stops_checks_that_are_still_queued_for_a_slot(tmp_path: Path
 
 
 class _BlockingPipe:
-    """A pipe Popen's own reader thread still holds, so close() waits on it."""
+    """A pipe the Popen reader thread still holds, so close() waits on it."""
 
     def __init__(self, release: threading.Event) -> None:
         self._release = release
@@ -319,7 +319,7 @@ def _no_kill(monkeypatch) -> None:
 def test_a_run_superseded_while_it_waits_for_a_slot_never_spawns(tmp_path: Path) -> None:
     # The slot wait is unbounded, so a queued thread can reach the spawn long
     # after the document stopped being its own. Starting a runner there and
-    # killing it again relies on a tree kill that can fail; not starting one
+    # killing it again relies on a tree kill that can fail, not starting one
     # cannot.
     from pyta_lsp.scheduler import default_spawn
 
@@ -353,10 +353,10 @@ def test_a_run_superseded_while_it_waits_for_a_slot_never_spawns(tmp_path: Path)
 def test_a_timed_out_run_hands_a_process_it_could_not_reap_to_a_reaper(
     monkeypatch, tmp_path: Path
 ) -> None:
-    # close() on a pipe waits for Popen's reader thread, and that thread is
-    # itself blocked reading a grandchild that survived the kill, so closing
-    # from the worker never returns: the check pool loses a thread and a slot
-    # for the rest of the session.
+    # close() on a pipe waits for the Popen reader thread, and that thread is itself
+    # blocked reading a grandchild that survived the kill, so closing from the
+    # worker never returns and the check pool loses a thread and a slot for the
+    # rest of the session.
     _no_kill(monkeypatch)
     never_released = threading.Event()
     proc = _StuckProc(never_released)

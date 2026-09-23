@@ -61,7 +61,7 @@ jobs:
           PYTHONPATH="$PWD/bundled/libs" .venv-bare/bin/python -m pytest server/tests -q -p no:cacheprovider
 
   bundle-max:
-    # bundle-min guards the oldest supported Python; this guards the newest.
+    # bundle-min guards the oldest supported Python, this one guards the newest.
     name: bundle on newest Python
     needs: [python]
     runs-on: ubuntu-latest

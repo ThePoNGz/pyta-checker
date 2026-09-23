@@ -45,12 +45,12 @@ describe('applyOnlyPyta', () => {
     await applyOnlyPyta(true, context, log);
     expect(state.values['basedpyright.analysis.ignore']).toEqual(['**']);
 
-    // basedpyright is uninstalled, so VS Code refuses writes to its settings -
-    // but the ignore-all we wrote is still sitting in the user's settings.json.
+    // basedpyright is uninstalled, so VS Code refuses writes to its settings, but the
+    // ignore-all we wrote is still sitting in settings.json.
     state.rejects['basedpyright.analysis.ignore'] = UNREGISTERED;
     await applyOnlyPyta(false, context, log);
 
-    // python restored cleanly, so we no longer owe it anything; only the refused
+    // python restored cleanly so we no longer owe it anything. Only the refused
     // entry stays behind.
     expect(context.globalState.get(SAVED_KEY)).toEqual({ basedpyright: ['src/generated'] });
   });
@@ -72,7 +72,7 @@ describe('applyOnlyPyta', () => {
     const context = fakeContext();
     await applyOnlyPyta(true, context, log);
 
-    // whatever the snapshot still claims, the value on disk is the user's now
+    // whatever the snapshot still claims, the value on disk belongs to the user now
     state.values['python.analysis.ignore'] = ['mine'];
     await applyOnlyPyta(false, context, log);
 
@@ -120,8 +120,8 @@ describe('applyOnlyPyta', () => {
     await applyOnlyPyta(false, context, log);
     expect(state.values['python.analysis.ignore']).toEqual(['a']);
 
-    // python is the user's again, so what they set now is what a later disable owes
-    // them - not the value we snapshotted two toggles ago.
+    // python belongs to the user again, so what they set now is what a later disable
+    // owes them, not the value we snapshotted two toggles ago.
     state.values['python.analysis.ignore'] = ['c'];
     await applyOnlyPyta(true, context, log);
     await applyOnlyPyta(false, context, log);
@@ -147,8 +147,8 @@ describe('applyOnlyPyta', () => {
     const context = fakeContext(store);
     await applyOnlyPyta(true, context, log);
 
-    // The second window writes through to the same storage; recording "absent" here
-    // throws away the only copy of the user's value.
+    // The second window writes through to the same storage. Recording "absent" here
+    // throws away the only copy of the value the user had.
     await applyOnlyPyta(true, staleContext(context), log);
     await applyOnlyPyta(false, context, log);
 
@@ -157,7 +157,7 @@ describe('applyOnlyPyta', () => {
 
   it('still treats a sentinel it did not write as absent when the cycle writes something', async () => {
     // Settings Sync or a reinstall can leave one setting already holding the sentinel
-    // with nothing recorded against it; disabling must remove it, not restore it.
+    // with nothing recorded against it. Disabling must remove it, not restore it.
     state.values['basedpyright.analysis.ignore'] = ['**'];
     const context = fakeContext();
 
@@ -183,8 +183,8 @@ describe('applyOnlyPyta', () => {
   });
 
   it('says so when a workspace setting outranks the global write', async () => {
-    // Writing globally reports success, but a workspace value wins, so the other
-    // server's problems stay on screen and the toggle looks broken.
+    // Writing globally reports success but a workspace value wins, so problems from
+    // the other server stay on screen and the toggle looks broken.
     state.scoped['basedpyright.analysis.ignore'] = ['src/generated'];
 
     await applyOnlyPyta(true, fakeContext(), log);

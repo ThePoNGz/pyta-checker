@@ -1,3 +1,5 @@
+// The PyTA status bar item. Shows what the server is doing and the problem count for
+// whatever Python file is in front of the user.
 import * as vscode from 'vscode';
 import type { StatusParams } from './client';
 
@@ -8,6 +10,15 @@ interface FileStatus {
   count: number;
 }
 
+/**
+ * Status bar item for PythonTA.
+ *
+ * Attributes:
+ *   item: the status bar entry itself
+ *   files: last reported state and problem count, keyed by document uri
+ *   serverState: whether the server is starting, running or broken
+ *   subscriptions: editor and document listeners this owns and disposes
+ */
 export class StatusBar implements vscode.Disposable {
   private readonly item: vscode.StatusBarItem;
   private readonly files = new Map<string, FileStatus>();

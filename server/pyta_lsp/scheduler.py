@@ -18,17 +18,17 @@ GENERATION_KEY = "__generation__"
 
 
 def runner_env() -> dict[str, str]:
+    """The environment the runner subprocess gets."""
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
-    # 3.11+. Keeps the spawn directory off sys.path[0] before the runner's own
-    # imports run, and mypy inherits it, so a student's string.py or random.py
-    # beside the checked file is never imported. Ignored on 3.10, where the cwd
-    # the server chooses is what limits the damage.
+    # 3.11+. Keeps the spawn directory off sys.path[0] before the runner imports
+    # anything, and mypy inherits it, so a string.py or random.py sitting beside
+    # the checked file never gets imported. Ignored on 3.10, where the cwd the
+    # server picks is what limits the damage.
     env["PYTHONSAFEPATH"] = "1"
-    # Pinned regardless of what the editor's environment says, so a stray
-    # MYPY_CACHE_DIR cannot point the cache at a directory the student's
-    # checks would fight over.
+    # We hard code this path so an environment variable like MYPY_CACHE_DIR doesnt
+    # make student checks fight over the same cache directory.
     env["MYPY_CACHE_DIR"] = mypy_cache_dir()
     return env
 
@@ -84,12 +84,12 @@ def _kill(proc: subprocess.Popen) -> None:
 
 
 def _reap_later(proc: subprocess.Popen) -> None:
-    """Hand a process the worker could not reap to a thread that can wait for it.
+    """Hand a process the worker could not reap to a thread that can wait on it.
 
-    Neither reaping nor closing may happen on the worker: a tree kill that did
-    not take leaves a grandchild holding the write end of the pipes, so Popen's
+    Neither reaping nor closing can happen on the worker. A tree kill that did not
+    take leaves a grandchild holding the write end of the pipes, so the Popen
     reader threads never finish and both communicate() and pipe.close() block
-    until they do. An untimed communicate() on a daemon thread closes the pipes
+    until they do. An untimed communicate() on a daemon thread closes the pipes by
     itself once the process finally dies, and costs nothing if it never does.
     """
     threading.Thread(target=_reap, args=(proc,), name="pyta-reap", daemon=True).start()
@@ -124,6 +124,19 @@ def _interpret(out: bytes, err: bytes, returncode: int | None, timed_out: bool, 
 
 
 class CheckScheduler:
+    """Runs one runner subprocess per document and keeps only the newest run alive.
+
+    Attributes:
+        _spawn: how a runner gets started, swapped out in tests.
+        _timeout: seconds a single run gets before we kill it.
+        _slots: caps how many runners can be alive at once.
+        _lock: guards every dict below.
+        _generation: the newest version ID per document key.
+        _completed: the version ID of the last run that finished per key.
+        _procs: the live process per key, when there is one.
+        _stopped: True after cancel_all, so nothing new can spawn.
+    """
+
     def __init__(self, spawn: Spawn = default_spawn, timeout: float = 60.0, max_parallel: int = 2) -> None:
         self._spawn = spawn
         self._timeout = timeout
@@ -135,11 +148,17 @@ class CheckScheduler:
         self._stopped = False
 
     def reserve(self, key: str) -> int:
-        """Claim the next generation for key and stop whatever is running for it.
+        """Grab the latest version ID for this key and kill anything currently running for it.
 
-        A caller that can fail before it reaches run() -- staging a copy, writing
-        it -- has to hold a generation from the start, or it cannot tell whether
-        the failure it is about to publish is still the newest word on the file.
+        If a caller can crash before it reaches run(), like staging a copy or writing
+        it, it needs to claim a version ID upfront. If we dont do that it wont know
+        if its own error message is still relevant.
+
+        Args:
+            key: the document this run belongs to, normally the URI.
+
+        Returns:
+            The new version ID to hand back to run(), fail() or guard().
         """
         with self._lock:
             generation = self._generation.get(key, 0) + 1
@@ -150,11 +169,19 @@ class CheckScheduler:
         return generation
 
     def fail(self, key: str, generation: int, action: Callable[[], None]) -> bool:
-        """Complete `generation` without a result and run action, if it is still the newest.
+        """Finish this version ID with no result and run action, if it is still the newest.
 
-        The action runs under the lock, as guard() does: deciding inside it and
-        publishing outside let a did_close land in between, so the failure was
-        published onto a document whose diagnostics had just been cleared.
+        The action runs under the lock the same way guard() does. Deciding inside the
+        lock and publishing outside it let a did_close land in between, so the failure
+        got published onto a document that had just been cleared.
+
+        Args:
+            key: the document key.
+            generation: the version ID the caller reserved.
+            action: what to run while the lock is held, normally publishing the failure.
+
+        Returns:
+            True when the action ran, False when a newer run already took the key.
         """
         with self._lock:
             if self._generation.get(key) != generation:
@@ -166,16 +193,28 @@ class CheckScheduler:
     def run(
         self, key: str, argv: list[str], cwd: str, generation: int | None = None
     ) -> dict[str, Any] | None:
+        """Run the runner for this key and hand back what it printed.
+
+        Args:
+            key: the document key.
+            argv: the command line for the runner subprocess.
+            cwd: where to start the runner, which decides sys.path[0] on 3.10.
+            generation: a version ID from reserve(), or None to claim one here.
+
+        Returns:
+            The parsed result with its version ID under GENERATION_KEY, or None when a
+            newer run took the key or the scheduler was stopped.
+        """
         if generation is None:
             generation = self.reserve(key)
 
         with self._slots:
             with self._lock:
-                # A thread can wait here for minutes. Spawning after cancel_all,
-                # or after a newer request took this key, starts a runner nothing
-                # is left to kill. The check, the spawn and the registration are
-                # one critical section, so a cancel_all cannot snapshot _procs
-                # between them and miss the process about to exist.
+                # A thread can get stuck here for a few minutes. Spawning after
+                # cancel_all, or after a newer request took this key, means starting
+                # a runner nothing can kill. The check, the spawn and the registration
+                # are one critical section so a cancel_all cannot snapshot _procs
+                # between them and miss a process about to exist.
                 if self._stopped or self._generation.get(key) != generation:
                     return None
                 proc = self._spawn(argv, cwd)
@@ -204,10 +243,18 @@ class CheckScheduler:
         return result
 
     def guard(self, key: str, generation: int, action: Callable[[], None]) -> bool:
-        """Run action under the lock only if `generation` is still both the newest and the last completed run for key.
+        """Run action under the lock, but only if this version ID is still the newest and the last one to finish.
 
-        Comparing against the caller's own generation is what stops a slow thread
-        holding an older result from republishing it over newer diagnostics.
+        Comparing against the version ID the caller holds is what stops a slow thread
+        with an older result from publishing it over newer diagnostics.
+
+        Args:
+            key: the document key.
+            generation: the version ID this caller ran with.
+            action: what to run while the lock is held, normally publishing diagnostics.
+
+        Returns:
+            True when the action ran, False when the result is stale.
         """
         with self._lock:
             completed = self._completed.get(key)
@@ -235,6 +282,7 @@ class CheckScheduler:
             _kill(proc)
 
     def cancel(self, key: str) -> None:
+        """Stop the check on one document and bump its version ID."""
         with self._lock:
             self._generation[key] = self._generation.get(key, 0) + 1
             proc = self._procs.pop(key, None)
