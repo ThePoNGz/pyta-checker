@@ -32,7 +32,7 @@ def test_maps_positions_and_fields() -> None:
     assert d.code_description is not None
     # W0612 (unused-variable) is documented on the PythonTA checkers page as of
     # 2026-09-22, so it resolves to the PyTA anchor rather than the pylint docs
-    # fallback; the fallback branch is covered by test_docs_url_rules below.
+    # fallback. The fallback branch is covered by test_docs_url_rules below.
     assert d.code_description.href == "https://www.cs.toronto.edu/~david/pyta/checkers/index.html#w0612"
 
 
@@ -104,7 +104,7 @@ _ACCENTED_PEP8 = 'X = "café naïve";Y=1\n'
 
 
 def test_pylint_columns_are_utf8_byte_offsets() -> None:
-    # badName starts at character 25; pylint reports byte offset 27.
+    # badName starts at character 25 and pylint reports byte offset 27.
     d = to_diagnostic(
         _msg(msg_id="C9103", symbol="naming-convention-violation",
              line=1, column=27, end_line=1, end_column=34),
@@ -180,7 +180,7 @@ def test_odd_column_conventions_land_where_the_source_says(tmp_path) -> None:
 
 
 def test_a_mypy_end_column_is_not_shifted_with_its_start(tmp_path) -> None:
-    # mypy's end column is 1-based inclusive, which is already the 0-based
+    # The mypy end column is 1-based inclusive, which is already the 0-based
     # exclusive offset every other code uses. Shifting it along with the start
     # would cut the last character off the squiggle.
     from pyta_lsp.runner import run_check
@@ -198,8 +198,8 @@ def test_a_mypy_end_column_is_not_shifted_with_its_start(tmp_path) -> None:
 
 
 def test_a_config_file_message_is_an_information_diagnostic_on_line_one() -> None:
-    # The student's own run prints this under the config file; here it has to
-    # sit on the file being checked, marked as being about the config.
+    # A student run prints this under the config file, but here it has to sit on
+    # the file being checked, marked as being about the config.
     diagnostic = config_diagnostic(
         {
             "filename": "C:/course/cfg.txt",

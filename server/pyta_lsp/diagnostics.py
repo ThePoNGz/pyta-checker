@@ -23,17 +23,17 @@ _PYLINT_DIRS = {
     "I": "information",
 }
 _UNKNOWN_END_COLUMN = 10_000
-# Everything routed through an astroid node carries a UTF-8 byte offset. These do
+# Anything routed through an astroid node carries a UTF-8 byte offset. These do
 # not, and they arrive mixed into the same message list. E9989 comes from
-# pycodestyle and E0001 from SyntaxError.offset; C0303 is len() of the stripped
+# pycodestyle, E0001 from SyntaxError.offset, C0303 is len() of the stripped
 # line, W0511 is a tokenize column, and W1401/W1402 index into the string body.
 # All of those count characters.
 _CHARACTER_BASED_CODES = frozenset({"E9989", "E0001", "C0303", "W0511", "W1401", "W1402"})
-# A third convention: E995x come from mypy through python_ta's static type
-# checker, which forwards mypy's columns unchanged. They are UTF-8 byte offsets
+# A third convention: E995x come from mypy through the python_ta static type
+# checker, which forwards the mypy columns unchanged. They are UTF-8 byte offsets
 # like the astroid ones, but the start is 1-based. The end column is 1-based
 # inclusive, which is already the 0-based exclusive offset used everywhere else,
-# so only the start is shifted back.
+# so we only shift the start back.
 _ONE_BASED_START_CODES = frozenset({"E9951", "E9952", "E9953", "E9954", "E9955", "E9956"})
 
 
@@ -44,8 +44,8 @@ def split_lines(source: str) -> list[str]:
     """Split source into lines, keepends, on \\r\\n, \\r and \\n only.
 
     str.splitlines also breaks on \\x0c, \\x0b, \\x1c-\\x1e, \\x85, \\u2028 and
-    \\u2029. Neither Python's tokenizer nor the editor counts any of those as a
-    line, so one in a comment shifts every later message onto the wrong line.
+    \\u2029. Neither the Python tokenizer nor the editor counts any of those as
+    a line, so one inside a comment shifts every later message onto the wrong line.
     """
     lines = _LINE_RE.findall(source)
     consumed = sum(len(line) for line in lines)
@@ -55,6 +55,7 @@ def split_lines(source: str) -> list[str]:
 
 
 def docs_url(msg_id: str, symbol: str) -> str:
+    """The docs page for a message, the PyTA one when it has an anchor there, else pylint."""
     if msg_id.upper() in PYTA_DOCUMENTED_CODES:
         return f"{PYTA_DOCS}#{msg_id.lower()}"
     directory = _PYLINT_DIRS.get(msg_id[:1].upper())
@@ -88,6 +89,16 @@ def _line_text(lines: Sequence[str] | None, index: int) -> str | None:
 
 
 def to_diagnostic(msg: dict[str, Any], lines: Sequence[str] | None) -> types.Diagnostic:
+    """Turn one PythonTA message into a diagnostic the editor can place.
+
+    Args:
+        msg: one message from the pyta JSON reporter.
+        lines: the checked text split with keepends, used to turn the reported column
+            into the UTF-16 one LSP wants. None means we pass the column through.
+
+    Returns:
+        A diagnostic with a range, a severity and a link to the docs for that code.
+    """
     msg_id = str(msg.get("msg_id", ""))
     byte_based = msg_id.upper() not in _CHARACTER_BASED_CODES
     line0 = max(int(msg.get("line") or 1) - 1, 0)
@@ -155,7 +166,7 @@ def to_diagnostic(msg: dict[str, Any], lines: Sequence[str] | None) -> types.Dia
 
 
 def config_diagnostic(msg: dict[str, Any]) -> types.Diagnostic:
-    """A message PythonTA reported against the config file rather than the checked one."""
+    """PythonTA will warn the user thru the config file instead of the code file the user is opening"""
     msg_id = str(msg.get("msg_id", ""))
     symbol = str(msg.get("symbol", ""))
     name = os.path.basename(str(msg.get("filename", ""))) or "config"
@@ -171,11 +182,11 @@ def config_diagnostic(msg: dict[str, Any]) -> types.Diagnostic:
 
 
 def config_warning_diagnostic(message: str) -> types.Diagnostic:
-    """A warning from reading the student's own check_all call.
+    """A warning that came out of reading the check_all call in the file.
 
     Every warning the runner returns comes from that reading, and each one means
     the file was checked against something other than the config the call asks
-    for. In the Output log alone that is invisible.
+    for. Sitting in the Output log alone it would be invisible.
     """
     return types.Diagnostic(
         range=types.Range(start=types.Position(0, 0), end=types.Position(0, _UNKNOWN_END_COLUMN)),
@@ -187,6 +198,7 @@ def config_warning_diagnostic(message: str) -> types.Diagnostic:
 
 
 def failure_diagnostic(reason: str) -> types.Diagnostic:
+    """Says the check could not run at all, with whatever reason we have."""
     return types.Diagnostic(
         range=types.Range(start=types.Position(0, 0), end=types.Position(0, _UNKNOWN_END_COLUMN)),
         message=f"PythonTA could not check this file: {reason}",

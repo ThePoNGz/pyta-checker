@@ -7,7 +7,7 @@ def test_version_is_semver() -> None:
 
 
 def test_version_matches_the_package_and_the_extension() -> None:
-    # The README's release steps bump three places; only the tag check in
+    # The release steps in the README bump three places. Only the tag check in
     # release.yml compares any of them, and it only sees package.json.
     import json
     import re

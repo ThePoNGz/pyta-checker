@@ -1,4 +1,4 @@
-"""Find the PythonTA config embedded in a file's check_all/check_errors call."""
+"""Find the PythonTA config embedded in a check_all or check_errors call."""
 from __future__ import annotations
 
 import ast
@@ -11,11 +11,21 @@ CHECK_FUNCTIONS = ("check_all", "check_errors")
 
 @dataclass
 class ExtractedConfig:
+    """What we managed to read out of a check_all or check_errors call.
+
+    Attributes:
+        kind: dict, path or absent, saying what the config argument turned out to be.
+        value: the config dict, the path to a config file, or None when there is none.
+        errors_only: True when the call was check_errors.
+        warnings: notes about anything we could not read, shown to the user later.
+        load_default_config: the literal the call passed, or None when the call said
+            nothing so the pyta default stands.
+    """
+
     kind: Literal["dict", "path", "absent"]
     value: dict[str, Any] | str | None
     errors_only: bool
     warnings: list[str] = field(default_factory=list)
-    # None means the call said nothing, so pyta's own default stands.
     load_default_config: bool | None = None
 
 
@@ -42,10 +52,10 @@ def _pyta_bindings(tree: ast.AST) -> tuple[set[str], dict[str, str]]:
 
 
 def _callee_name(call: ast.Call, modules: set[str], functions: dict[str, str]) -> str | None:
-    """The check function this call invokes, or None if it is not python_ta's.
+    """The check function this call invokes, or None when it doesnt come from python_ta.
 
-    A student helper named check_all is not pyta's, and letting one supply the
-    config lints them against settings the grader never applies.
+    A student helper named check_all is not the pyta one, and letting it supply
+    the config lints them against settings the grader never applies.
     """
     func = call.func
     if isinstance(func, ast.Attribute):
@@ -68,8 +78,8 @@ def _check_calls(tree: ast.AST) -> list[tuple[str, ast.Call]]:
     return calls
 
 
-# python_ta's own order: check_all/check_errors(module_name, config, output,
-# load_default_config, autoformat, on_verify_fail, pylint_args).
+# The argument order python_ta uses: check_all/check_errors(module_name, config,
+# output, load_default_config, autoformat, on_verify_fail, pylint_args).
 _POSITIONS = {"config": 1, "load_default_config": 3}
 
 
@@ -115,6 +125,17 @@ def _load_default_config(call: ast.Call, name: str) -> tuple[bool | None, list[s
 
 
 def extract_config(tree: ast.AST, base_dir: Path) -> ExtractedConfig:
+    """Read the config a file asks for in its own check_all or check_errors call.
+
+    Args:
+        tree: the parsed file to look through.
+        base_dir: what a relative config path resolves against, normally the folder
+            the checked file came from.
+
+    Returns:
+        An ExtractedConfig, kind "absent" when there is no call or nothing readable
+        in it, carrying a warning for every part we had to skip.
+    """
     calls = _check_calls(tree)
     if not calls:
         return ExtractedConfig("absent", None, False)
@@ -126,8 +147,8 @@ def extract_config(tree: ast.AST, base_dir: Path) -> ExtractedConfig:
     )
     warnings: list[str] = []
     if _starred_kwargs(call):
-        # It takes no positional slot, so whatever is written out is still read;
-        # what it may carry unseen is another config or a load_default_config.
+        # It takes no positional slot so whatever is written out is still read.
+        # What it can hide is another config or a load_default_config.
         warnings.append(
             f"line {call.lineno}: {name}() is called with **kwargs, "
             "so the arguments it carries cannot be read"

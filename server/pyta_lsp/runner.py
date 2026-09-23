@@ -41,9 +41,9 @@ def apply_import_strategy(env: Mapping[str, str] = os.environ, path: list[str] =
 def strip_cwd_from_path(cwd: str | None = None, path: list[str] = sys.path) -> None:
     """Drop the entry `python -m` puts at sys.path[0].
 
-    That entry is the directory of the file being checked, so without this a
-    module sitting beside a student's file (python_ta.py, queue.py, random.py)
-    outranks the bundled libs and the standard library.
+    That entry is the folder of the file being checked, so without this a module
+    sitting beside the student file (python_ta.py, queue.py, random.py) outranks
+    the bundled libs and the standard library.
     """
     target = os.path.normcase(os.path.abspath(os.getcwd() if cwd is None else cwd))
     for entry in [p for p in path if os.path.normcase(os.path.abspath(p)) == target]:
@@ -113,7 +113,7 @@ def _split_messages(report_data: list[Any], target: Path) -> tuple[list[Any], li
 
     The reporter keeps an entry per file it read and drops only the non-.py ones
     with nothing to say, so a bad option in the course config arrives here
-    carrying that file's line numbers.
+    carrying the line numbers of that config file.
     """
     messages: list[Any] = []
     elsewhere: list[Any] = []
@@ -153,6 +153,21 @@ def run_check(
     workspace_root: str | None = None,
     source_dir: str | None = None,
 ) -> dict[str, Any]:
+    """Check one file with PythonTA and collect everything it gave back.
+
+    Args:
+        path: the file to check, which for a staged run is the copy, not the original.
+        config_path: config file from settings, used only when the file asks for nothing.
+        errors_only: run check_errors instead of check_all.
+        use_embedded: read the config out of the check_all call in the file.
+        workspace_root: what a relative config_path resolves against.
+        source_dir: the folder the file really belongs to, which is not its parent
+            when we check a staged copy.
+
+    Returns:
+        A dict with ok, the messages for this file, the messages from elsewhere, the
+        warnings, the captured log and the pyta version.
+    """
     result = _empty_result()
     file_path = Path(path)
     if not file_path.is_file():
@@ -192,11 +207,11 @@ def run_check(
     old_cache = os.environ.get("MYPY_CACHE_DIR")
     parent_str = str(base_dir)
     inserted_path = False
-    # python_ta's logging.basicConfig only binds a handler on the first call in a
-    # process, so a handler attached here directly to the root logger is the only
-    # way to reliably capture its log output on repeated in-process runs. Match
-    # pyta's own format/level so its "[ERROR] ..." pre-check failures still carry
-    # the prefix the fallback below looks for.
+    # logging.basicConfig inside python_ta only binds a handler on the first call in
+    # a process, so attaching a handler here straight to the root logger is the only
+    # reliable way to capture the log on repeated in process runs. We match the pyta
+    # format and level so the "[ERROR] ..." pre check failures still carry the prefix
+    # the fallback below looks for.
     root_logger = logging.getLogger()
     log_handler = logging.StreamHandler(log)
     log_handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
@@ -205,16 +220,16 @@ def run_check(
     if previous_level == logging.NOTSET or previous_level > logging.INFO:
         root_logger.setLevel(logging.INFO)
     try:
-        # mypy shortens only paths under its cwd, and python_ta's
-        # ^(?P<file>[^:]+): cannot match a Windows drive letter, so an absolute
-        # path drops every E9951-E9956 message. Any ancestor will do, and the
-        # server deliberately spawns a staged check one directory above the copy
-        # so that nothing of the student's sits in sys.path[0].
+        # mypy only shortens paths under its cwd, and the python_ta pattern
+        # ^(?P<file>[^:]+): cannot match a Windows drive letter, so an absolute path
+        # drops every E9951-E9956 message. Any ancestor works, and the server spawns
+        # a staged check one directory above the copy on purpose so nothing of the
+        # student sits in sys.path[0].
         if not file_path.is_relative_to(Path(old_cwd).resolve()):
             os.chdir(file_path.parent)
-        # python_ta spawns mypy with this process's cwd and environment, and mypy
-        # writes a .mypy_cache into that cwd unless it is told otherwise. The
-        # server's spawn env pins this; a check run in process has to pin it too.
+        # python_ta spawns mypy with the cwd and environment of this process, and
+        # mypy writes a .mypy_cache into that cwd unless told otherwise. The spawn env
+        # of the server pins this, so a check running in process has to pin it too.
         os.environ["MYPY_CACHE_DIR"] = mypy_cache_dir()
         if parent_str not in sys.path:
             sys.path.append(parent_str)
@@ -225,9 +240,9 @@ def run_check(
             result["pyta_version"] = getattr(python_ta, "__version__", "unknown")
             result["pyta_location"] = os.path.dirname(python_ta.__file__)
             checker = python_ta.check_errors if errors_only else python_ta.check_all
-            # pylint_args is ours: it carries the reporter this runner parses, and
-            # pyta reads the first --output-format it finds, so a student's own
-            # list could silently take the output away.
+            # pylint_args is ours, it carries the reporter this runner parses. pyta
+            # reads the first --output-format it finds, so a list from the student
+            # could quietly take the output away.
             checker(
                 str(file_path),
                 config=config,
@@ -269,6 +284,7 @@ def run_check(
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Read the command line, run one check and print the JSON result."""
     parser = argparse.ArgumentParser(prog="python -m pyta_lsp.runner")
     parser.add_argument("path")
     parser.add_argument("--config")

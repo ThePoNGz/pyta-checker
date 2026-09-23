@@ -221,10 +221,10 @@ def test_missing_config_file_reports_the_underlying_error(tmp_path: Path) -> Non
 
 
 def test_non_utf8_coding_cookie_is_decoded_for_parsing(tmp_path: Path) -> None:
-    # PEP 263. python and pylint both honour this cookie, so the runner does too:
-    # the file decodes and a syntax error in it is reported as E0001 rather than as
-    # an unreadable file. PythonTA itself still cannot check such a file - upstream
-    # reads it as UTF-8 and raises - so this covers the parse step only.
+    # PEP 263. python and pylint both honour this cookie so the runner does too, the
+    # file decodes and a syntax error in it is reported as E0001 rather than as an
+    # unreadable file. PythonTA itself still cannot check such a file, because
+    # upstream reads it as UTF-8 and raises, so this covers the parse step only.
     source = '# -*- coding: cp1252 -*-\n"""Doc."""\nX = "café" ** ** 2\n'
     (tmp_path / "a1.py").write_bytes(source.encode("cp1252"))
 
@@ -273,9 +273,9 @@ def _course_file(tmp_path: Path, name: str, extra: str) -> Path:
 
 
 def test_load_default_config_false_is_forwarded_to_pyta(tmp_path: Path) -> None:
-    # PythonTA's own defaults disable C0103 in favour of its C9103. A course file
-    # that turns the defaults off gets C0103 when it runs the check itself, so the
-    # server has to turn them off too or the squiggles differ from the grader's.
+    # The PythonTA defaults disable C0103 in favour of C9103. A course file that
+    # turns the defaults off gets C0103 when it runs the check itself, so the server
+    # has to turn them off too or the squiggles differ from what the grader sees.
     (tmp_path / "course.txt").write_text("[FORMAT]\nmax-line-length=100\n", encoding="utf-8")
 
     merged = run_check(_course_file(tmp_path, "merged.py", ""))
@@ -288,9 +288,9 @@ def test_load_default_config_false_is_forwarded_to_pyta(tmp_path: Path) -> None:
 
 
 def test_a_message_about_the_config_file_is_not_pinned_on_the_checked_file(tmp_path: Path) -> None:
-    # PythonTA's reporter keeps one entry per file it saw and drops only the
+    # The PythonTA reporter keeps one entry per file it saw and drops only the
     # non-.py ones with no messages, so a bad option in the course config arrives
-    # in the same list carrying cfg.txt's own line numbers.
+    # in the same list carrying the line numbers of cfg.txt.
     (tmp_path / "cfg.txt").write_text(
         "[MESSAGES CONTROL]\ndisable=not-a-real-message\n", encoding="utf-8"
     )
@@ -329,8 +329,8 @@ _SIBLING_MARKER = "with open(__file__ + '.MARKER', 'w') as handle:\n    handle.w
 
 
 def _spawn_like_the_server(source_dir: Path, name: str) -> subprocess.CompletedProcess:
-    """Spawn the runner the way the server does: from an empty directory, with the
-    student's folder passed as --source-dir rather than used as the cwd."""
+    """Spawn the runner the way the server does, from an empty directory, with the
+    student folder passed as --source-dir rather than used as the cwd."""
     from pyta_lsp.scheduler import runner_env
 
     spawn_dir = tempfile.mkdtemp(prefix="pyta-lsp-test-")
@@ -347,10 +347,10 @@ def _spawn_like_the_server(source_dir: Path, name: str) -> subprocess.CompletedP
 
 
 def test_a_sibling_named_after_a_stdlib_module_is_not_imported_at_startup(tmp_path: Path) -> None:
-    # python -m puts the spawn directory at sys.path[0] before the runner's own
-    # module-level imports run, and strip_cwd_from_path only runs inside main().
-    # The server therefore never spawns in the student's folder; on 3.11+
-    # PYTHONSAFEPATH covers the same ground.
+    # python -m puts the spawn directory at sys.path[0] before the runner runs any
+    # module level import, and strip_cwd_from_path only runs inside main(). So the
+    # server never spawns in the student folder, and on 3.11+ PYTHONSAFEPATH covers
+    # the same ground.
     (tmp_path / "string.py").write_text(_SIBLING_MARKER, encoding="utf-8")
     (tmp_path / "a1.py").write_text('"""Doc."""\nX = 1\n', encoding="utf-8")
 
@@ -366,10 +366,10 @@ def test_a_sibling_named_after_a_stdlib_module_is_not_imported_at_startup(tmp_pa
     reason="an in-place check on 3.10 runs mypy in the student's folder: the residual recorded in DEVLOG 15",
 )
 def test_a_sibling_random_module_is_not_imported_by_the_mypy_subprocess(tmp_path: Path) -> None:
-    # python_ta's StaticTypeChecker spawns `python -m mypy` with the runner's cwd,
-    # and mypy's own startup imports tempfile, which imports random. The file is
-    # checked in place here, so the runner chdirs into the student's folder and
-    # only PYTHONSAFEPATH keeps random.py out of that mypy.
+    # The python_ta StaticTypeChecker spawns `python -m mypy` with the runner cwd,
+    # and mypy imports tempfile at startup, which imports random. The file is
+    # checked in place here, so the runner chdirs into the student folder and only
+    # PYTHONSAFEPATH keeps random.py out of that mypy.
     (tmp_path / "random.py").write_text(_SIBLING_MARKER, encoding="utf-8")
     (tmp_path / "a1.py").write_text('"""Doc."""\nCOUNT: int = 1\n', encoding="utf-8")
 
@@ -381,7 +381,7 @@ def test_a_sibling_random_module_is_not_imported_by_the_mypy_subprocess(tmp_path
 
 
 def test_mypy_messages_survive_a_staged_check(tmp_path: Path) -> None:
-    # python_ta's StaticTypeChecker matches mypy's output with ^(?P<file>[^:]+):,
+    # The python_ta StaticTypeChecker matches mypy output with ^(?P<file>[^:]+):,
     # which a Windows drive letter cannot satisfy. mypy only shortens paths under
     # its cwd, so checking a staged copy from the source directory dropped every
     # E9951-E9956 message without a word.
@@ -399,10 +399,10 @@ def test_mypy_messages_survive_a_staged_check(tmp_path: Path) -> None:
 
 
 def test_the_runner_stays_in_a_cwd_that_already_holds_the_file(tmp_path: Path, monkeypatch) -> None:
-    # The server spawns a staged check one directory above the copy, so that
-    # nothing of the student's sits in sys.path[0]. mypy only needs a cwd the
-    # file is under, so descending into the copy's own directory would give that
-    # protection away for nothing.
+    # The server spawns a staged check one directory above the copy so that nothing
+    # of the student sits in sys.path[0]. mypy only needs a cwd the file is under,
+    # so descending into the directory of the copy would give that protection away
+    # for nothing.
     staged = tmp_path / "staged"
     staged.mkdir()
     target = staged / "a1.py"
@@ -420,9 +420,9 @@ def test_the_runner_stays_in_a_cwd_that_already_holds_the_file(tmp_path: Path, m
 
 
 def test_an_in_process_check_leaves_no_mypy_cache_in_the_cwd(tmp_path: Path, monkeypatch) -> None:
-    # Only the server's spawn env pinned MYPY_CACHE_DIR, so a check run in this
-    # process -- the tests, or `python -m pyta_lsp.runner` by hand -- dropped a
-    # .mypy_cache wherever it happened to be standing. One of those was packaged
+    # Only the spawn env of the server pinned MYPY_CACHE_DIR, so a check run in this
+    # process, the tests or `python -m pyta_lsp.runner` by hand, dropped a
+    # .mypy_cache wherever it happened to be standing. One of those got packaged
     # into the VSIX from the repository root.
     monkeypatch.delenv("MYPY_CACHE_DIR", raising=False)
     target = tmp_path / "a1.py"

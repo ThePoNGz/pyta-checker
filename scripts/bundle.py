@@ -26,9 +26,9 @@ LOCK = SERVER / "requirements.lock"
 LIBS = ROOT / "bundled" / "libs"
 NOTICES = ROOT / "THIRD_PARTY_NOTICES.md"
 MIN_PY = "3.10"
-# No pure wheels on PyPI; built from sdist with extensions disabled.
+# No pure wheels on PyPI so we build these from sdist with the extensions off.
 SDIST_ONLY = {"aiohttp", "markupsafe"}
-# Packages whose optional C speedups may compile during an sdist build; the binaries are deleted.
+# Packages whose optional C speedups can compile during an sdist build. We delete those binaries.
 SPEEDUP_OK = {"markupsafe"}
 COMPILED_NAME_RE = re.compile(r"\.(so|pyd|dylib|dll)(\.|$)")
 _PY_VERSION_MARKER_VARS = {"python_version", "python_full_version"}
@@ -59,24 +59,34 @@ def _venv_python(root: Path) -> Path:
 def _version_key(version: str) -> Any:
     try:
         from packaging.version import Version
-    except ImportError:  # a bare interpreter still has pip's vendored copy
+    except ImportError:  # a bare interpreter still has the pip vendored copy
         from pip._vendor.packaging.version import Version
 
     return Version(version)
 
 
 def _marker_is_python_version_only(marker: str) -> bool:
-    # A marker only compares python_version/python_full_version means the
-    # duplicate version it produced is just a Python-version split, safe to
-    # resolve by taking the max. Anything else (sys_platform, extra, ...)
-    # means the versions are platform- or environment-specific, not a
-    # Python-version split, so the caller must not silently pick one.
+    # A marker that only compares python_version or python_full_version means the
+    # duplicate version it produced is just a Python version split, so taking the
+    # max is safe. Anything else (sys_platform, extra, ...) means the versions are
+    # specific to a platform or an environment, not a Python version split, so the
+    # caller must not quietly pick one.
     without_literals = re.sub(r"'[^']*'|\"[^\"]*\"", "", marker)
     idents = set(_MARKER_IDENT.findall(without_literals)) - _MARKER_KEYWORDS
     return idents <= _PY_VERSION_MARKER_VARS
 
 
 def read_pins(lock: Path) -> list[tuple[str, str]]:
+    """Read name and version out of a lockfile, one pin per package.
+
+    Args:
+        lock: the lockfile to read, comments and environment markers included.
+
+    Returns:
+        Pairs of normalised name and version in the order the lockfile lists them.
+        A package pinned twice by a Python version marker keeps the higher version,
+        and any other kind of split raises instead of guessing.
+    """
     entries: dict[str, list[tuple[str, str]]] = {}
     order: list[str] = []
     for raw in lock.read_text(encoding="utf-8").splitlines():
@@ -132,6 +142,12 @@ def _pip_target() -> list:
 
 
 def strip_bundle() -> None:
+    """Clear everything out of the bundle that must not ship.
+
+    Drops bin, include and every __pycache__, deletes the compiled speedups we allow
+    to build, and raises when any other compiled file turns up, because the bundle
+    has to stay pure Python to run on every platform.
+    """
     shutil.rmtree(LIBS / "bin", ignore_errors=True)
     shutil.rmtree(LIBS / "include", ignore_errors=True)
     offenders: list[Path] = []
@@ -153,6 +169,7 @@ _HOMEPAGE_HINTS = ("home", "source", "repo", "github", "code")
 
 
 def homepage_from_metadata(meta) -> str:
+    """The best homepage link in package metadata, Home-page first then a Project-URL."""
     home_page = meta.get("Home-page")
     if home_page:
         return home_page
@@ -172,6 +189,7 @@ def homepage_from_metadata(meta) -> str:
 
 
 def write_notices() -> None:
+    """Rebuild THIRD_PARTY_NOTICES.md from the dist-info of everything in the bundle."""
     rows: list[tuple[str, str, str, str]] = []
     for info_dir in sorted(LIBS.glob("*.dist-info")):
         meta = Distribution.at(info_dir).metadata

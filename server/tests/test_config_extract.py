@@ -129,7 +129,7 @@ def test_an_aliased_python_ta_import_still_counts(tmp_path: Path) -> None:
 
 
 def test_load_default_config_is_extracted_from_the_call_that_supplies_the_config() -> None:
-    # Without it the file is checked against PythonTA's defaults merged in, which
+    # Without it the file is checked against the PythonTA defaults merged in, which
     # is not what the course file asked for or what the grader runs.
     source = (
         "import python_ta\n"
