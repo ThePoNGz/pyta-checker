@@ -27,3 +27,7 @@ package-lock.json
 *.vsix
 pytacheckericon128.png
 yoyoyoyo.md
+zed/**
+.claude/**
+CLAUDE.md
+ZED_PLAN.md
