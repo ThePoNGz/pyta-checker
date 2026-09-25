@@ -55,7 +55,7 @@ The Zed extension lives in [`zed/`](zed/). It is not in the Zed extension regist
 1. Install [Rust via rustup](https://rustup.rs), which Zed needs to compile a dev extension.
 2. Clone this repository.
 3. In Zed, open the Extensions page, click **Install Dev Extension**, and pick the `zed/` folder of the checkout.
-4. Open a Python file. The extension downloads PythonTA and the checker from the latest GitHub release on first use, and finds a Python 3.10+ on its own. To use a specific Python, set:
+4. Open a Python file. The extension downloads PythonTA and the checker from the latest GitHub release on first use, and finds a Python 3.10+ on its own. Until a release newer than v0.1.0 exists, build the server with `python scripts/bundle.py build` instead and point `lsp.pyta-lsp.settings.serverDir` at the checkout's `bundled/libs`. To use a specific Python, set:
 
 ```json
 {

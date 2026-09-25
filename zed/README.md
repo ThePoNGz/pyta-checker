@@ -13,6 +13,8 @@ The extension is not in the Zed extension registry yet, so install it as a dev e
 3. In Zed, open the Extensions page (`zed: extensions`), click **Install Dev Extension**, and pick the `zed/` folder of the checkout.
 4. Open a Python file. The first time, the extension downloads the server (PythonTA and everything it needs) from the latest GitHub release of pyta-checker into Zed's work directory for the extension. Nothing is installed into your Python.
 
+Until a release newer than v0.1.0 is tagged there is no server to download, and the extension says so. In the meantime build the server yourself with `python scripts/bundle.py build` in the checkout and set `serverDir` (below) to its `bundled/libs`.
+
 You need Python 3.10 or newer. The extension looks for it in this order: the `interpreter` setting, `.venv/bin/python` (`.venv\Scripts\python.exe` on Windows) in the project, then `python3` and `python` on your PATH (`python` first on Windows). The first one that runs is the one it uses, and if that one is older than 3.10 it stops and tells you, rather than trying the next. Zed does not hand its selected Python toolchain to extensions, so set `interpreter` if the one it finds is not the one you want.
 
 ## Settings

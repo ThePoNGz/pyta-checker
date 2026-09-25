@@ -8,6 +8,9 @@ pub const REPO: &str = "ThePoNGz/pyta-checker";
 pub const SERVER_ID: &str = "pyta-lsp";
 /// Release assets and the directories they unpack into both start with this.
 pub const SERVER_PREFIX: &str = "pyta-lsp-server-";
+/// Written into a server directory once its download was checked, so a directory
+/// Zed was killed in the middle of unpacking is never taken for a finished one.
+pub const INSTALL_MARKER: &str = "installed";
 pub const PROBE: &str = "import sys; print(sys.version_info[0], sys.version_info[1])";
 /// -E and -s keep the shell PYTHON* variables and the user site out of the probe,
 /// and unlike -I they exist on Python 2, so an old python still reports its version.
@@ -89,9 +92,11 @@ pub fn interpreter_candidates(settings: &Settings, worktree_root: &str, os: Os) 
     if let Some(configured) = &settings.interpreter {
         return vec![Candidate::Configured(configured.clone())];
     }
-    let names: [&str; 2] = match os {
-        Os::Windows => ["python", "python3"],
-        Os::Mac | Os::Linux => ["python3", "python"],
+    // Same order as the VS Code client. On Windows the py launcher is often the
+    // only Python on PATH, and it runs the same -m pyta_lsp command line.
+    let names: &[&str] = match os {
+        Os::Windows => &["python", "python3", "py"],
+        Os::Mac | Os::Linux => &["python3", "python"],
     };
     let mut candidates = vec![Candidate::Venv(venv_python(worktree_root, os))];
     candidates.extend(names.iter().map(|name| Candidate::OnPath(name.to_string())));
@@ -350,6 +355,7 @@ mod tests {
                 Candidate::Venv("C:\\proj\\.venv\\Scripts\\python.exe".into()),
                 Candidate::OnPath("python".into()),
                 Candidate::OnPath("python3".into()),
+                Candidate::OnPath("py".into()),
             ]
         );
     }

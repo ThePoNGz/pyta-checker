@@ -9,8 +9,8 @@ use std::path::Path;
 use logic::{
     check_version, interpreter_candidates, libs_dir, newest_server_dir, parse_probe,
     parse_settings, pick_asset, probe_failure, server_dir_name, server_env, stale_server_dirs,
-    workspace_configuration, Candidate, FetchError, Os, PythonVersion, Settings, PROBE, PROBE_ARGS,
-    REPO, SERVER_ARGS, SERVER_ID,
+    workspace_configuration, Candidate, FetchError, Os, PythonVersion, Settings, INSTALL_MARKER,
+    PROBE, PROBE_ARGS, REPO, SERVER_ARGS, SERVER_ID,
 };
 use zed_extension_api::settings::LspSettings;
 use zed_extension_api::{self as zed, LanguageServerId, LanguageServerInstallationStatus, Result};
@@ -59,6 +59,11 @@ fn has_libs(server_dir: &str) -> bool {
     Path::new(server_dir).join("libs").is_dir()
 }
 
+/// A download that got all the way through the check at the end of `download`.
+fn is_installed(server_dir: &str) -> bool {
+    has_libs(server_dir) && Path::new(server_dir).join(INSTALL_MARKER).is_file()
+}
+
 /// The server directories in the work dir, only the ones a download finished in.
 fn usable_server_dirs() -> Vec<String> {
     fs::read_dir(".")
@@ -66,7 +71,7 @@ fn usable_server_dirs() -> Vec<String> {
             entries
                 .filter_map(|entry| entry.ok())
                 .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                .filter(|name| has_libs(name))
+                .filter(|name| is_installed(name))
                 .collect()
         })
         .unwrap_or_default()
@@ -125,7 +130,7 @@ impl PytaExtension {
         }
         let work_dir = work_dir()?;
         if let Some(server_dir) = &self.server_dir {
-            if has_libs(server_dir) {
+            if is_installed(server_dir) {
                 return Ok(libs_dir(&work_dir, server_dir));
             }
         }
@@ -180,7 +185,7 @@ impl PytaExtension {
             .find(|asset| asset.name == asset_name)
             .expect("the picked asset came from this list");
         let dir_name = server_dir_name(&release.version);
-        if has_libs(&dir_name) {
+        if is_installed(&dir_name) {
             return Ok(dir_name);
         }
         zed::set_language_server_installation_status(
@@ -216,6 +221,22 @@ impl PytaExtension {
         if !has_libs(dir_name) {
             return Err(format!("{} did not contain a libs directory", asset.name));
         }
+        if !dir
+            .join("libs")
+            .join("pyta_lsp")
+            .join("__init__.py")
+            .is_file()
+        {
+            return Err(format!(
+                "{} did not contain the pyta_lsp package",
+                asset.name
+            ));
+        }
+        fs::write(
+            dir.join(INSTALL_MARKER),
+            "written by the PythonTA Zed extension once the download was checked\n",
+        )
+        .map_err(|error| format!("could not mark {dir_name} as installed: {error}"))?;
         Ok(())
     }
 }
