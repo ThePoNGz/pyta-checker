@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Zed extension in `zed/`, installed as a dev extension until it is in the Zed registry. It downloads the server from the GitHub release and finds Python 3.10+ on its own; `lsp.pyta-lsp.settings.interpreter` picks a specific one.
+- Each release now also attaches `pyta-lsp-server-<version>.tar.gz`: the checker and PythonTA as one `libs` directory, for Zed and any other LSP editor.
+- The server can be started from any directory, including a project root holding a file named after a standard-library module, on every supported Python.
+
 ## 0.1.0 — 2026-09-22
 
 - Check Python files with PythonTA on open, on save, and on command; results appear as squiggles and in the Problems panel with links to the docs.
