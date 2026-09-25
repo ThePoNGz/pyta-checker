@@ -183,8 +183,8 @@ pub fn stale_server_dirs<'a>(names: impl IntoIterator<Item = &'a str>, keep: &st
         .collect()
 }
 
-/// Zed hands the extension its work directory with forward slashes on every OS,
-/// and Python accepts them everywhere, so this never uses the host separator.
+/// Zed hands the extension its work directory (PWD) with forward slashes on
+/// every OS, and Python accepts them everywhere, so this never uses the host separator.
 pub fn libs_dir(work_dir: &str, server_dir: &str) -> String {
     let trimmed = work_dir.trim_end_matches('/');
     format!("{trimmed}/{server_dir}/libs")

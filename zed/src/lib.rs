@@ -43,6 +43,18 @@ fn probe(python: &str) -> Result<PythonVersion> {
     parse_probe(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// The absolute extension work dir. Zed passes it in PWD with forward slashes on
+/// every OS, and the API crate sets the WASI cwd from that same variable at init,
+/// so the cwd is only the fallback.
+fn work_dir() -> Result<String> {
+    match std::env::var("PWD") {
+        Ok(pwd) if !pwd.trim().is_empty() => Ok(pwd),
+        _ => std::env::current_dir()
+            .map(|dir| dir.to_string_lossy().into_owned())
+            .map_err(|error| format!("could not read the extension directory: {error}")),
+    }
+}
+
 fn has_libs(server_dir: &str) -> bool {
     Path::new(server_dir).join("libs").is_dir()
 }
@@ -111,10 +123,7 @@ impl PytaExtension {
         if let Some(dir) = &settings.server_dir {
             return Ok(dir.clone());
         }
-        let work_dir = std::env::current_dir()
-            .map_err(|error| format!("could not read the extension directory: {error}"))?
-            .to_string_lossy()
-            .into_owned();
+        let work_dir = work_dir()?;
         if let Some(server_dir) = &self.server_dir {
             if has_libs(server_dir) {
                 return Ok(libs_dir(&work_dir, server_dir));
@@ -128,6 +137,9 @@ impl PytaExtension {
             Ok(server_dir) => server_dir,
             // Offline, or the release is not there yet. An earlier download still works.
             Err(error) => {
+                // stderr ends up in the Zed log, so the user can see why the newest
+                // release was not fetched this time.
+                eprintln!("pyta-lsp: {}", error.message());
                 let existing = usable_server_dirs();
                 match newest_server_dir(existing.iter().map(String::as_str)) {
                     Some(existing) => existing.to_string(),
