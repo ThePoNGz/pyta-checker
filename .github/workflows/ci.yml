@@ -53,6 +53,10 @@ jobs:
           python-version: '3.10'
       - name: Build bundled libs
         run: python scripts/bundle.py build
+      - name: Server tarball starts from an unrelated directory
+        run: |
+          python scripts/bundle.py tarball dist
+          python scripts/bundle.py check-tarball dist/pyta-lsp-server-*.tar.gz
       - name: Python tests against the bundle only (no python-ta installed)
         run: |
           python -m venv .venv-bare
@@ -72,6 +76,10 @@ jobs:
           python-version: '3.14'
       - name: Build bundled libs
         run: python scripts/bundle.py build
+      - name: Server tarball starts from an unrelated directory
+        run: |
+          python scripts/bundle.py tarball dist
+          python scripts/bundle.py check-tarball dist/pyta-lsp-server-*.tar.gz
       - name: Python tests against the bundle only (no python-ta installed)
         run: |
           python -m venv .venv-bare
@@ -99,6 +107,11 @@ jobs:
       - run: npm ci
       - name: Build bundled libs
         run: python scripts/bundle.py build
+      - name: Server tarball starts from an unrelated directory
+        shell: bash
+        run: |
+          python scripts/bundle.py tarball dist
+          python scripts/bundle.py check-tarball dist/pyta-lsp-server-*.tar.gz
       - name: Python tests against the bundle only (no python-ta installed)
         if: runner.os == 'Linux'
         run: |

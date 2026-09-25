@@ -1,7 +1,12 @@
+import atexit
 import json
+import os
+import shutil
 import sys
+import tempfile
 import time
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 import pytest
 import pytest_lsp
@@ -38,6 +43,45 @@ async def quiet_client(lsp_client: LanguageClient) -> AsyncGenerator[None, None]
     await lsp_client.shutdown_session()
 
 
+def _client_started_in_a_shadowing_directory() -> LanguageClient:
+    """A client whose server starts from a directory holding a json.py.
+
+    Zed starts language servers at the project root, and nothing stops a
+    student from keeping a file named after a standard library module there.
+    """
+    client = pytest_lsp.make_test_lsp_client()
+    root = Path(tempfile.mkdtemp(prefix="pyta-lsp-shadow-"))
+    atexit.register(shutil.rmtree, root, ignore_errors=True)
+    (root / "json.py").write_text("raise RuntimeError('the project json.py was imported')\n", encoding="utf-8")
+    start_io = client.start_io
+
+    async def start_io_in_root(cmd: str, *args, **kwargs) -> None:
+        await start_io(cmd, *args, cwd=str(root), **kwargs)
+
+    client.start_io = start_io_in_root  # type: ignore[method-assign]
+    client.server_root = root  # type: ignore[attr-defined]
+    return client
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-m", "pyta_lsp"],
+        client_factory=_client_started_in_a_shadowing_directory,
+        server_env={**os.environ, "PYTHONSAFEPATH": "1", "PYTHONUTF8": "1"},
+    )
+)
+async def shadowed_client(lsp_client: LanguageClient) -> AsyncGenerator[None, None]:
+    await lsp_client.initialize_session(
+        types.InitializeParams(
+            capabilities=types.ClientCapabilities(),
+            root_uri=FIXTURES.as_uri(),
+            initialization_options={"runOnOpen": True, "runOnSave": True, "configPath": ""},
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
+
+
 def _open(client: LanguageClient, name: str) -> str:
     path = FIXTURES / name
     uri = path.as_uri()
@@ -64,6 +108,25 @@ async def test_open_publishes_diagnostics_honoring_embedded_config(client: Langu
     assert pep8.range.end == types.Position(line=11, character=len("    total=0"))
     assert pep8.code_description is not None
     assert pep8.code_description.href.endswith("#e9989")
+
+
+async def test_the_server_checks_from_a_project_root_that_shadows_the_stdlib(
+    shadowed_client: LanguageClient,
+) -> None:
+    # The VS Code client starts the server inside the extension folder. Zed starts
+    # it at the project root, so nothing here may depend on the old cwd, and a
+    # json.py at that root must not be the json the server or the runner imports.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    root = shadowed_client.server_root  # type: ignore[attr-defined]
+    assert (root / "json.py").is_file()
+
+    uri = _open(shadowed_client, "course_style.py")
+    await shadowed_client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in shadowed_client.diagnostics[uri]}
+    assert FAILURE_CODE not in codes, [d.message for d in shadowed_client.diagnostics[uri]]
+    assert "E9989" in codes
 
 
 async def test_close_clears_diagnostics(client: LanguageClient) -> None:

@@ -36,6 +36,10 @@ jobs:
       - run: python -m pytest server/tests -q
       - run: npm test
       - run: python scripts/bundle.py build
+      - name: Server tarball for other editors
+        run: |
+          python scripts/bundle.py tarball dist
+          python scripts/bundle.py check-tarball dist/pyta-lsp-server-*.tar.gz
       - run: npm run build:prod
       - run: npx @vscode/vsce package --no-dependencies -o "pyta-checker-${GITHUB_REF_NAME}.vsix"
       - name: GitHub release
@@ -45,12 +49,12 @@ jobs:
         # gets rerun, and gh release create fails outright on a release that exists.
         run: |
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" pyta-checker-*.vsix --clobber
+            gh release upload "${GITHUB_REF_NAME}" pyta-checker-*.vsix dist/pyta-lsp-server-*.tar.gz --clobber
             # gh release create drafts, uploads, then publishes, so a failed first
             # run can leave a draft. Publishing here does nothing to a live release.
             gh release edit "${GITHUB_REF_NAME}" --draft=false
           else
-            gh release create "${GITHUB_REF_NAME}" pyta-checker-*.vsix --generate-notes
+            gh release create "${GITHUB_REF_NAME}" pyta-checker-*.vsix dist/pyta-lsp-server-*.tar.gz --generate-notes
           fi
       - name: Publish to Marketplace (trusted publishing)
         if: vars.VSCE_USE_OIDC == 'true'

@@ -45,3 +45,40 @@ def test_main_releases_checks_when_the_loop_raises(monkeypatch) -> None:
     with pytest.raises(RuntimeError):
         entry.main()
     assert fake.stopped == 1
+
+
+def test_drop_cwd_from_path_removes_only_the_cwd_entries(tmp_path, monkeypatch) -> None:
+    from pyta_lsp.__main__ import drop_cwd_from_path
+
+    monkeypatch.setattr("sys.flags", type("Flags", (), {"safe_path": False})())
+    other = str(tmp_path / "elsewhere")
+    path = [str(tmp_path), "", other, str(tmp_path)]
+
+    drop_cwd_from_path(str(tmp_path), path)
+
+    assert path == ["", other]
+
+
+def test_drop_cwd_from_path_treats_the_empty_entry_as_the_cwd(tmp_path, monkeypatch) -> None:
+    from pyta_lsp.__main__ import drop_cwd_from_path
+
+    monkeypatch.setattr("sys.flags", type("Flags", (), {"safe_path": False})())
+    monkeypatch.chdir(tmp_path)
+    path = ["", "/somewhere/else"]
+
+    drop_cwd_from_path(None, path)
+
+    assert path == ["/somewhere/else"]
+
+
+def test_drop_cwd_from_path_defers_to_safe_path(tmp_path, monkeypatch) -> None:
+    # With PYTHONSAFEPATH the interpreter never added the cwd, so an entry equal to
+    # it was put there on purpose by whoever launched us.
+    from pyta_lsp.__main__ import drop_cwd_from_path
+
+    monkeypatch.setattr("sys.flags", type("Flags", (), {"safe_path": True})())
+    path = [str(tmp_path)]
+
+    drop_cwd_from_path(str(tmp_path), path)
+
+    assert path == [str(tmp_path)]

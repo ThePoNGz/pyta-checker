@@ -4,19 +4,23 @@ Usage:
   python scripts/bundle.py lock     # regenerate server/requirements.lock (universal, Python >= 3.10)
   python scripts/bundle.py build    # recreate bundled/libs and THIRD_PARTY_NOTICES.md, then verify
   python scripts/bundle.py verify   # import check against bundled/libs with an isolated interpreter
+  python scripts/bundle.py tarball [OUT_DIR]         # write OUT_DIR/pyta-lsp-server-<version>.tar.gz (default dist/)
+  python scripts/bundle.py check-tarball TARBALL      # extract it somewhere else and start the server from there
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import venv
 from importlib.metadata import Distribution
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +29,10 @@ REQ_IN = SERVER / "requirements.in"
 LOCK = SERVER / "requirements.lock"
 LIBS = ROOT / "bundled" / "libs"
 NOTICES = ROOT / "THIRD_PARTY_NOTICES.md"
+PYPROJECT = SERVER / "pyproject.toml"
+DIST = ROOT / "dist"
+# Editors that download the server look for a release asset with this prefix.
+TARBALL_PREFIX = "pyta-lsp-server-"
 MIN_PY = "3.10"
 # No pure wheels on PyPI so we build these from sdist with the extensions off.
 SDIST_ONLY = {"aiohttp", "markupsafe"}
@@ -42,6 +50,7 @@ PURE_BUILD_ENV = {
     "PROPCACHE_NO_EXTENSIONS": "1",
 }
 _PIN = re.compile(r"^([A-Za-z0-9_.\-]+)==([^\s;]+)")
+_VERSION_LINE = re.compile(r'^version = "([^"]+)"', re.MULTILINE)
 
 
 def run(cmd: list, **kwargs) -> None:
@@ -263,10 +272,186 @@ def cmd_build() -> int:
     return cmd_verify()
 
 
+def server_version(pyproject: Path = PYPROJECT) -> str:
+    """The version line of the server pyproject, which is what the tarball is named after."""
+    match = _VERSION_LINE.search(pyproject.read_text(encoding="utf-8"))
+    if not match:
+        raise SystemExit(f"no version line in {pyproject}")
+    return match.group(1)
+
+
+def tarball_name(version: str) -> str:
+    return f"{TARBALL_PREFIX}{version}.tar.gz"
+
+
+def _anonymous(info: tarfile.TarInfo) -> tarfile.TarInfo:
+    info.uid = info.gid = 0
+    info.uname = info.gname = ""
+    return info
+
+
+def write_tarball(out_dir: Path, libs: Path = LIBS, version: str | None = None) -> Path:
+    """Pack the bundle into one tarball with a single top level libs directory.
+
+    The bundle already holds the pyta_lsp package next to its dependencies, so
+    one PYTHONPATH entry pointing at the extracted libs directory is all an
+    editor needs to run `python -m pyta_lsp`.
+
+    Args:
+        out_dir: where the tarball goes, created when missing.
+        libs: the bundle to pack.
+        version: what to name the tarball after, the server version by default.
+
+    Returns:
+        The tarball path.
+    """
+    if not (libs / "pyta_lsp" / "__init__.py").is_file():
+        raise SystemExit(f"{libs} has no pyta_lsp package; run `python scripts/bundle.py build` first")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / tarball_name(version or server_version())
+    with tarfile.open(target, "w:gz") as tar:
+        for path in sorted(libs.rglob("*")):
+            relative = path.relative_to(libs)
+            if "__pycache__" in relative.parts:
+                continue
+            tar.add(path, arcname=f"libs/{relative.as_posix()}", recursive=False, filter=_anonymous)
+    print(f"wrote {target}")
+    return target
+
+
+def extract_tarball(tarball: Path, into: Path) -> Path:
+    """Unpack a server tarball and hand back its libs directory.
+
+    Every entry has to sit under libs/ and be a plain file or directory, so a
+    tarball from anywhere else cannot write outside the directory it was given.
+    """
+    with tarfile.open(tarball, "r:gz") as tar:
+        for member in tar.getmembers():
+            parts = PurePosixPath(member.name).parts
+            if member.name.startswith("/") or ".." in parts or parts[:1] != ("libs",):
+                raise SystemExit(f"{tarball.name} has an entry outside libs/: {member.name}")
+            if not (member.isfile() or member.isdir()):
+                raise SystemExit(f"{tarball.name} has an entry that is not a file or directory: {member.name}")
+        if hasattr(tarfile, "data_filter"):
+            tar.extractall(into, filter="data")
+        else:  # 3.10 and early 3.11, the check above already did the work
+            tar.extractall(into)
+    return into / "libs"
+
+
+def _frame(payload: dict[str, Any]) -> bytes:
+    body = json.dumps(payload).encode("utf-8")
+    return b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n\r\n" + body
+
+
+def _messages(data: bytes) -> list[dict[str, Any]]:
+    """Split the framed JSON-RPC bytes a server wrote into messages."""
+    messages: list[dict[str, Any]] = []
+    while data:
+        header, separator, rest = data.partition(b"\r\n\r\n")
+        length_match = re.search(rb"Content-Length: *(\d+)", header)
+        if not separator or not length_match:
+            break
+        length = int(length_match.group(1))
+        if len(rest) < length:  # a partial message, the server died mid write
+            break
+        messages.append(json.loads(rest[:length].decode("utf-8")))
+        data = rest[length:]
+    return messages
+
+
+def initialize_round_trip(
+    python: str, cwd: Path, env: dict[str, str], timeout: float = 60.0
+) -> dict[str, Any]:
+    """Start the server in cwd, initialize it, shut it down, and return the initialize result.
+
+    Everything goes down the pipe at once and the reply is read after the server
+    exits, so no thread has to babysit a read with a timeout.
+    """
+    proc = subprocess.Popen(
+        [python, "-m", "pyta_lsp"],
+        cwd=cwd,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    script = [
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"processId": None, "rootUri": cwd.as_uri(), "capabilities": {}},
+        },
+        {"jsonrpc": "2.0", "method": "initialized", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "shutdown", "params": None},
+        {"jsonrpc": "2.0", "method": "exit", "params": None},
+    ]
+    try:
+        out, err = proc.communicate(b"".join(_frame(m) for m in script), timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        raise SystemExit(f"the server did not answer initialize within {int(timeout)} seconds")
+    stderr = err.decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise SystemExit(f"the server exited with code {proc.returncode}:\n{stderr}")
+    for message in _messages(out):
+        if message.get("id") == 1:
+            if "error" in message:
+                raise SystemExit(f"initialize failed: {message['error']}\n{stderr}")
+            return message["result"]
+    raise SystemExit(f"the server never answered initialize:\n{stderr}")
+
+
+def cmd_tarball(out_dir: Path) -> int:
+    write_tarball(out_dir)
+    return 0
+
+
+def cmd_check_tarball(tarball: Path) -> int:
+    """Prove the tarball works the way an editor uses it, from a directory of its own."""
+    with tempfile.TemporaryDirectory() as tmp:
+        libs = extract_tarball(tarball, Path(tmp) / "extracted")
+        env = {
+            **os.environ,
+            "PYTHONPATH": str(libs),
+            "PYTHONSAFEPATH": "1",
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
+        }
+        code = (
+            "import sys, pyta_lsp, python_ta, pygls; "
+            "libs = sys.argv[1]; "
+            "bad = [m.__name__ for m in (pyta_lsp, python_ta, pygls) if not m.__file__.startswith(libs)]; "
+            "assert not bad, f'imported from outside the tarball: {bad}'; "
+            "print('tarball ok: pyta_lsp', pyta_lsp.__version__, '| python-ta', python_ta.__version__)"
+        )
+        run([sys.executable, "-c", code, str(libs)], cwd=tmp, env=env)
+        # The project root an editor starts the server from, holding the worst file
+        # a student can put there.
+        project = Path(tmp) / "project"
+        project.mkdir()
+        (project / "json.py").write_text("raise RuntimeError('the project json.py was imported')\n", encoding="utf-8")
+        result = initialize_round_trip(sys.executable, project, env)
+        name = result.get("serverInfo", {}).get("name")
+        if name != "pyta-lsp":
+            raise SystemExit(f"unexpected server: {result.get('serverInfo')}")
+        print(f"initialize ok: {name} {result['serverInfo'].get('version')} from {project}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["lock", "build", "verify"])
+    parser.add_argument("command", choices=["lock", "build", "verify", "tarball", "check-tarball"])
+    parser.add_argument("path", nargs="?", help="tarball: the output directory. check-tarball: the tarball.")
     args = parser.parse_args(argv)
+    if args.command == "tarball":
+        return cmd_tarball(Path(args.path) if args.path else DIST)
+    if args.command == "check-tarball":
+        if not args.path:
+            parser.error("check-tarball needs the tarball path")
+        return cmd_check_tarball(Path(args.path))
     return {"lock": cmd_lock, "build": cmd_build, "verify": cmd_verify}[args.command]()
 
 

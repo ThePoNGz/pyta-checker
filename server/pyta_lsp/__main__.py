@@ -1,8 +1,28 @@
 """Entry point for `python -m pyta_lsp` and the `pyta-lsp` console script."""
 from __future__ import annotations
 
-import logging
+import os
 import sys
+
+
+def drop_cwd_from_path(cwd: str | None = None, path: list[str] = sys.path) -> None:
+    """Take the directory `python -m` put at the front of sys.path back out.
+
+    An editor starts the server from the project root, and on 3.10 there is no
+    PYTHONSAFEPATH, so a student file called json.py at that root would be imported
+    in place of the standard library one. This runs before anything the server
+    needs gets imported, so the shadowing never happens.
+    """
+    if getattr(sys.flags, "safe_path", False):
+        return
+    target = os.path.normcase(os.path.abspath(os.getcwd() if cwd is None else cwd))
+    for entry in [p for p in path if os.path.normcase(os.path.abspath(p or os.curdir)) == target]:
+        path.remove(entry)
+
+
+drop_cwd_from_path()
+
+import logging  # noqa: E402
 
 
 def configure_logging() -> None:
