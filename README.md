@@ -73,7 +73,7 @@ Zed runs every Python language server you have, so for Only PythonTA add:
 {
   "languages": {
     "Python": {
-      "language_servers": ["pyta-lsp", "!basedpyright", "!ruff", "!pyright", "!ty", "!pylsp"]
+      "language_servers": ["pyta-lsp"]
     }
   }
 }

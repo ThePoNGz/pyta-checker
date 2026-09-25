@@ -13,7 +13,7 @@ The extension is not in the Zed extension registry yet, so install it as a dev e
 3. In Zed, open the Extensions page (`zed: extensions`), click **Install Dev Extension**, and pick the `zed/` folder of the checkout.
 4. Open a Python file. The first time, the extension downloads the server (PythonTA and everything it needs) from the latest GitHub release of pyta-checker into Zed's work directory for the extension. Nothing is installed into your Python.
 
-You need Python 3.10 or newer. The extension looks for it in this order: the `interpreter` setting, `.venv/bin/python` (`.venv\Scripts\python.exe` on Windows) in the project, then `python3` and `python` on your PATH (`python` first on Windows). Zed does not hand its selected Python toolchain to extensions, so set `interpreter` if the one it finds is not the one you want.
+You need Python 3.10 or newer. The extension looks for it in this order: the `interpreter` setting, `.venv/bin/python` (`.venv\Scripts\python.exe` on Windows) in the project, then `python3` and `python` on your PATH (`python` first on Windows). The first one that runs is the one it uses, and if that one is older than 3.10 it stops and tells you, rather than trying the next. Zed does not hand its selected Python toolchain to extensions, so set `interpreter` if the one it finds is not the one you want.
 
 ## Settings
 
@@ -39,30 +39,30 @@ Both keys live under `lsp.pyta-lsp.settings` in your Zed settings (`zed: open se
 
 | Key | Meaning |
 | --- | --- |
-| `interpreter` | Path to a Python executable. When set, it is the only one tried, and a path that does not run is reported instead of silently replaced. |
+| `interpreter` | Absolute path to a Python executable (`~` is not expanded). When set, it is the only one tried, and a path that does not run is reported instead of silently replaced. |
 | `serverDir` | Path to a local `libs` directory holding the server and its dependencies. Skips the download. Build one with `python scripts/bundle.py build` in a checkout and point this at its `bundled/libs`. |
 
-`initialization_options` are passed to the server as they are: `runOnSave`, `runOnOpen` and `configPath` mean the same as the `pythonta.*` settings in the VS Code extension. `configPath` is a PythonTA config file used when the file has no `check_all(config=...)` of its own, relative to the project root.
+`initialization_options` are the checker's own settings: `runOnSave`, `runOnOpen` and `configPath` mean the same as the `pythonta.*` settings in the VS Code extension. `configPath` is a PythonTA config file used when the file has no `check_all(config=...)` of its own, relative to the project root. Put them there, not under `settings`, which only holds the two keys above.
 
 ## Only PythonTA
 
-Zed runs every Python language server you have installed. To see only PythonTA problems, tell Zed which servers to run for Python:
+Zed runs every Python language server you have installed. To see only PythonTA problems, list it as the one server to run for Python:
 
 ```json
 {
   "languages": {
     "Python": {
-      "language_servers": ["pyta-lsp", "!basedpyright", "!ruff", "!pyright", "!ty", "!pylsp"]
+      "language_servers": ["pyta-lsp"]
     }
   }
 }
 ```
 
-Drop the `!` entries you still want, for example keep basedpyright for completions and go-to-definition.
+A list without `"..."` runs only what it names. To keep the others, for example basedpyright for completions and go-to-definition, and drop just one, use `["pyta-lsp", "...", "!ruff"]`.
 
 ## Reading the log
 
-Run `zed: open log`. Lines tagged `pyta-lsp` say which Python was chosen, where the server came from, and what the checker did. For more, quit Zed and start it from a terminal with `zed --foreground`.
+Two logs matter. `zed: open log` is where the extension reports why it could not find a Python or fetch the server. `dev: open language server logs` (pick PythonTA) shows what the server printed: which Python it runs under and what the checker did with each file. For more, quit Zed and start it from a terminal with `zed --foreground`.
 
 If the extension reports that no Python was found, or that the one it found is too old, set `interpreter`. If it reports that the server could not be downloaded, check your connection, or set `serverDir` to a local build.
 

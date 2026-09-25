@@ -9,7 +9,12 @@ pub const SERVER_ID: &str = "pyta-lsp";
 /// Release assets and the directories they unpack into both start with this.
 pub const SERVER_PREFIX: &str = "pyta-lsp-server-";
 pub const PROBE: &str = "import sys; print(sys.version_info[0], sys.version_info[1])";
+/// -E and -s keep the shell PYTHON* variables and the user site out of the probe,
+/// and unlike -I they exist on Python 2, so an old python still reports its version.
+pub const PROBE_ARGS: [&str; 3] = ["-E", "-s", "-c"];
 pub const SERVER_ARGS: [&str; 2] = ["-m", "pyta_lsp"];
+/// The settings section the server asks for with workspace/configuration.
+pub const SERVER_SECTION: &str = "pythonta";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Os {
@@ -118,6 +123,18 @@ pub fn parse_probe(stdout: &str) -> Result<PythonVersion, String> {
     }
 }
 
+/// What to tell the user when the probe ran but did not print a version.
+pub fn probe_failure(status: Option<i32>, stderr: &str) -> String {
+    let reason = match status {
+        Some(code) => format!("exit code {code}"),
+        None => "killed by a signal".to_string(),
+    };
+    match stderr.lines().map(str::trim).find(|line| !line.is_empty()) {
+        Some(line) => format!("{reason}: {line}"),
+        None => reason,
+    }
+}
+
 pub fn check_version(version: PythonVersion, python: &str) -> Result<(), String> {
     if (version.major, version.minor) >= MIN_PYTHON {
         return Ok(());
@@ -166,11 +183,58 @@ pub fn stale_server_dirs<'a>(names: impl IntoIterator<Item = &'a str>, keep: &st
         .collect()
 }
 
-pub fn libs_dir(work_dir: &str, server_dir: &str, os: Os) -> String {
-    join(&join(work_dir, server_dir, os), "libs", os)
+/// Zed hands the extension its work directory with forward slashes on every OS,
+/// and Python accepts them everywhere, so this never uses the host separator.
+pub fn libs_dir(work_dir: &str, server_dir: &str) -> String {
+    let trimmed = work_dir.trim_end_matches('/');
+    format!("{trimmed}/{server_dir}/libs")
+}
+
+/// Why the server could not be fetched from GitHub.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FetchError {
+    /// The newest release predates the tarball, so nothing can be downloaded from it.
+    NoTarball { tag: String },
+    /// The lookup or the download itself failed.
+    Failed(String),
+}
+
+impl FetchError {
+    pub fn message(&self) -> String {
+        match self {
+            FetchError::NoTarball { tag } => format!(
+                "The latest pyta-checker release ({tag}) has no server tarball, so this extension \
+                 needs a newer release. Until then, point lsp.pyta-lsp.settings.serverDir in your \
+                 Zed settings at a local libs directory."
+            ),
+            FetchError::Failed(reason) => format!(
+                "Could not get the PythonTA server: {reason}. Check your connection, or point \
+                 lsp.pyta-lsp.settings.serverDir in your Zed settings at a local libs directory."
+            ),
+        }
+    }
+}
+
+/// The workspace configuration Zed sends the server right after initialize.
+///
+/// The server answers a change of configuration by asking for the `pythonta`
+/// section and falls back to whatever the notification carried, and either way
+/// it replaces every setting it has. So this holds the same options the server
+/// was initialized with, under the section name it asks for, and the initialization
+/// options stay in force instead of being reset to the defaults on every start.
+pub fn workspace_configuration(initialization_options: Option<Value>) -> Value {
+    let options = match initialization_options {
+        Some(Value::Object(object)) => Value::Object(object),
+        _ => Value::Object(serde_json::Map::new()),
+    };
+    let mut wrapped = serde_json::Map::new();
+    wrapped.insert(SERVER_SECTION.to_string(), options);
+    Value::Object(wrapped)
 }
 
 /// Variables from the shell that point at some other Python and outrank the one we picked.
+/// Zed merges what we return over its own process environment, so this only covers
+/// the shell env we were handed, not what Zed itself was launched with.
 const DROPPED: [&str; 4] = ["PYTHONHOME", "VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONSTARTUP"];
 
 /// The environment the server runs in: the shell env with the bundle first on
@@ -352,22 +416,56 @@ mod tests {
     }
 
     #[test]
-    fn libs_dir_uses_the_host_separator() {
+    fn libs_dir_uses_forward_slashes_like_the_work_dir_zed_gives() {
         assert_eq!(
             libs_dir(
                 "/home/me/.local/zed/work/pyta-lsp",
-                "pyta-lsp-server-v0.2.0",
-                Os::Linux
+                "pyta-lsp-server-v0.2.0"
             ),
             "/home/me/.local/zed/work/pyta-lsp/pyta-lsp-server-v0.2.0/libs"
         );
         assert_eq!(
-            libs_dir(
-                "C:\\Users\\me\\work\\pyta-lsp\\",
-                "pyta-lsp-server-v0.2.0",
-                Os::Windows
-            ),
-            "C:\\Users\\me\\work\\pyta-lsp\\pyta-lsp-server-v0.2.0\\libs"
+            libs_dir("C:/Users/me/work/pyta-lsp/", "pyta-lsp-server-v0.2.0"),
+            "C:/Users/me/work/pyta-lsp/pyta-lsp-server-v0.2.0/libs"
+        );
+    }
+
+    #[test]
+    fn probe_failures_name_the_exit_and_the_first_stderr_line() {
+        assert_eq!(
+            probe_failure(Some(2), "Unknown option: -X\nusage: python [option] ...\n"),
+            "exit code 2: Unknown option: -X"
+        );
+        assert_eq!(probe_failure(Some(1), "\n  \n"), "exit code 1");
+        assert_eq!(probe_failure(None, ""), "killed by a signal");
+    }
+
+    #[test]
+    fn fetch_errors_tell_the_user_what_to_do() {
+        let no_tarball = FetchError::NoTarball {
+            tag: "v0.1.0".into(),
+        }
+        .message();
+        assert!(no_tarball.contains("v0.1.0"), "{no_tarball}");
+        assert!(no_tarball.contains("newer release"), "{no_tarball}");
+        assert!(!no_tarball.contains("connection"), "{no_tarball}");
+        let failed = FetchError::Failed("timed out".into()).message();
+        assert!(failed.contains("timed out"), "{failed}");
+        assert!(failed.contains("connection"), "{failed}");
+        assert!(failed.contains("serverDir"), "{failed}");
+    }
+
+    #[test]
+    fn workspace_configuration_wraps_the_initialization_options_in_the_server_section() {
+        let options = json!({"runOnSave": false, "configPath": "config/.pylintrc"});
+        assert_eq!(
+            workspace_configuration(Some(options.clone())),
+            json!({"pythonta": options})
+        );
+        assert_eq!(workspace_configuration(None), json!({"pythonta": {}}));
+        assert_eq!(
+            workspace_configuration(Some(json!("not an object"))),
+            json!({"pythonta": {}})
         );
     }
 

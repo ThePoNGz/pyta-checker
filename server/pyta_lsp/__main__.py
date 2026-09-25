@@ -39,7 +39,11 @@ def configure_logging() -> None:
 def main(argv: list[str] | None = None) -> int:
     """Set up logging, serve over stdio, then make sure no check outlives us."""
     configure_logging()
+    from . import __version__
     from .server import server
+
+    # Editors that pick the interpreter themselves show this in their server log.
+    logging.getLogger("pyta_lsp").info("pyta-lsp %s running under %s", __version__, sys.executable)
 
     try:
         server.start_io()

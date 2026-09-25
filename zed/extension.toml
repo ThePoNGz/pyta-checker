@@ -15,7 +15,8 @@ kind = "download_file"
 host = "github.com"
 path = ["ThePoNGz", "pyta-checker", "**"]
 
+# The only command the extension runs is the version probe of whichever Python it picked.
 [[capabilities]]
 kind = "process:exec"
 command = "*"
-args = ["**"]
+args = ["-E", "-s", "-c", "*"]

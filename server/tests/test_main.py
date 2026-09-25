@@ -34,6 +34,18 @@ def test_main_releases_checks_when_the_connection_closes(monkeypatch) -> None:
     assert fake.stopped == 1
 
 
+def test_main_logs_the_interpreter_it_runs_under(monkeypatch, caplog) -> None:
+    import sys
+
+    from pyta_lsp import __main__ as entry
+
+    monkeypatch.setattr("pyta_lsp.server.server", _FakeServer())
+    with caplog.at_level(logging.INFO, logger="pyta_lsp"):
+        entry.main()
+
+    assert any(sys.executable in record.getMessage() for record in caplog.records)
+
+
 def test_main_releases_checks_when_the_loop_raises(monkeypatch) -> None:
     import pytest
 
