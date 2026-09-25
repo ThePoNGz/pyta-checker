@@ -27,4 +27,4 @@ python scripts/bundle.py build        # rebuild bundled/libs (slow, needs networ
 - `src/` VS Code client. `src/client.ts` shows the exact command, args, env and initialization options the server expects.
 - `scripts/bundle.py` builds `bundled/libs`, a pure Python, platform independent copy of every server dependency for Python 3.10 and up.
 - `.github/workflows/ci.yml` tests, `.github/workflows/release.yml` builds the VSIX on a `v*` tag.
-- `zed/` Zed extension (in progress, see `ZED_PLAN.md` while it exists).
+- `zed/` Zed extension. `zed/src/logic.rs` holds every decision with native `cargo test` tests, `zed/src/lib.rs` is the glue to the Zed API, `zed/README.md` documents the settings.
