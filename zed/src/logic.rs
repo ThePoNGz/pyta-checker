@@ -298,6 +298,32 @@ pub enum ProbeOutcome {
     Found(PythonVersion, String),
 }
 
+/// The one probe failure that says nothing about the interpreter: pyenv aborts
+/// this way when PYENV_DIR is not a directory, which means the worktree root was
+/// a file after all. Anything else, a pinned version that is not installed
+/// included, is the answer and must not be papered over by another try.
+pub fn pyenv_refused_directory(reason: &str) -> bool {
+    reason.contains("cannot change working directory")
+}
+
+/// Probes with each PYENV_DIR in turn, moving on only when pyenv refused the
+/// directory itself. Any other outcome, good or bad, is final.
+pub fn probe_across_dirs(
+    count: usize,
+    mut probe: impl FnMut(usize) -> ProbeOutcome,
+) -> ProbeOutcome {
+    let mut outcome = probe(0);
+    for index in 1..count {
+        match &outcome {
+            ProbeOutcome::Failed(reason) if pyenv_refused_directory(reason) => {
+                outcome = probe(index)
+            }
+            _ => break,
+        }
+    }
+    outcome
+}
+
 fn candidate_label(candidate: &Candidate) -> &str {
     match candidate {
         Candidate::Configured(path) | Candidate::Venv(path) | Candidate::OnPath(path) => path,
@@ -706,6 +732,60 @@ mod tests {
         assert_eq!(
             venv_python("/home/me/a1", Os::Linux),
             "/home/me/a1/.venv/bin/python"
+        );
+    }
+
+    #[test]
+    fn only_a_pyenv_directory_refusal_moves_the_probe_to_the_parent() {
+        let refused =
+            "exit code 1: pyenv: cannot change working directory to `/home/me/a1/tally.py'";
+        let missing = "exit code 127: pyenv: version `3.12.1' is not installed (set by /home/me/a1/.python-version)";
+        assert!(pyenv_refused_directory(refused));
+        assert!(!pyenv_refused_directory(missing));
+        assert!(!pyenv_refused_directory("exit code 1: Traceback"));
+
+        let found = ProbeOutcome::Found(version(3, 12), "/py/bin/python3.12".into());
+        let mut calls = Vec::new();
+        let outcome = probe_across_dirs(2, |index| {
+            calls.push(index);
+            if index == 0 {
+                ProbeOutcome::Failed(refused.into())
+            } else {
+                found.clone()
+            }
+        });
+        assert_eq!(outcome, found);
+        assert_eq!(calls, vec![0, 1]);
+
+        // A pinned version pyenv cannot run is the answer, not a reason to look elsewhere.
+        let mut calls = Vec::new();
+        let outcome = probe_across_dirs(2, |index| {
+            calls.push(index);
+            if index == 0 {
+                ProbeOutcome::Failed(missing.into())
+            } else {
+                found.clone()
+            }
+        });
+        assert_eq!(outcome, ProbeOutcome::Failed(missing.into()));
+        assert_eq!(calls, vec![0]);
+
+        let mut calls = Vec::new();
+        assert_eq!(
+            probe_across_dirs(2, |index| {
+                calls.push(index);
+                found.clone()
+            }),
+            found
+        );
+        assert_eq!(calls, vec![0]);
+        assert_eq!(
+            probe_across_dirs(1, |_| ProbeOutcome::Failed(refused.into())),
+            ProbeOutcome::Failed(refused.into())
+        );
+        assert_eq!(
+            probe_across_dirs(2, |_| ProbeOutcome::Missing),
+            ProbeOutcome::Missing
         );
     }
 

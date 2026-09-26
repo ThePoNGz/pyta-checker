@@ -8,10 +8,10 @@ use std::path::Path;
 
 use logic::{
     choose_interpreter, executable_to_start, interpreter_candidates, is_bare_name, libs_dir,
-    newest_server_dir, parse_probe, parse_settings, pick_asset, probe_env, probe_failure,
-    project_root, server_dir_name, server_env, stale_server_dirs, workspace_configuration,
-    Candidate, FetchError, Os, ProbeOutcome, Settings, INSTALL_MARKER, NOTICE_VAR, PROBE,
-    PROBE_ARGS, REPO, SERVER_ARGS, SERVER_ID,
+    newest_server_dir, parse_probe, parse_settings, pick_asset, probe_across_dirs, probe_env,
+    probe_failure, project_root, server_dir_name, server_env, stale_server_dirs,
+    workspace_configuration, Candidate, FetchError, Os, ProbeOutcome, Settings, INSTALL_MARKER,
+    NOTICE_VAR, PROBE, PROBE_ARGS, REPO, SERVER_ARGS, SERVER_ID,
 };
 use zed_extension_api::settings::LspSettings;
 use zed_extension_api::{self as zed, LanguageServerId, LanguageServerInstallationStatus, Result};
@@ -130,16 +130,9 @@ impl PytaExtension {
             let Some(python) = python else {
                 return ProbeOutcome::Missing;
             };
-            // A pyenv shim refuses a PYENV_DIR that is not a directory, so the
-            // next entry, the parent, gets a turn before the candidate is given up.
-            let mut outcome = ProbeOutcome::Missing;
-            for env in &envs {
-                outcome = probe(&python, env);
-                if !matches!(outcome, ProbeOutcome::Failed(_)) {
-                    break;
-                }
-            }
-            outcome
+            // A pyenv shim refuses a PYENV_DIR that is not a directory, and only
+            // then does the parent get a turn. Every other failure is the answer.
+            probe_across_dirs(envs.len(), |index| probe(&python, &envs[index]))
         })
     }
 
