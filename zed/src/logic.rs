@@ -26,7 +26,7 @@ pub const PROBE_ARGS: [&str; 1] = ["-c"];
 /// root would be imported in place of the standard library one. This line takes
 /// the start directory out first and imports nothing until it has. scripts/bundle.py
 /// holds the same line for its own check, and a test keeps the two equal.
-pub const SERVER_LAUNCHER: &str = "import os, sys; here = os.path.normcase(os.path.realpath(os.getcwd())); sys.path[:] = [p for p in sys.path if p and os.path.normcase(os.path.realpath(p)) != here]; import runpy; runpy.run_module('pyta_lsp', run_name='__main__', alter_sys=True)";
+pub const SERVER_LAUNCHER: &str = "import os, sys\ndef _r(p):\n    try:\n        return os.path.normcase(os.path.realpath(p))\n    except OSError:\n        return os.path.normcase(os.path.abspath(p))\nhere = _r(os.getcwd())\nsys.path[:] = [p for p in sys.path if p and _r(p) != here]\nimport runpy\nrunpy.run_module('pyta_lsp', run_name='__main__', alter_sys=True)";
 pub const SERVER_ARGS: [&str; 2] = ["-c", SERVER_LAUNCHER];
 /// The settings section the server asks for with workspace/configuration.
 pub const SERVER_SECTION: &str = "pythonta";

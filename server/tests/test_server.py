@@ -197,6 +197,39 @@ async def test_the_launcher_checks_from_a_root_full_of_stdlib_names(
     assert "E9989" in codes
 
 
+async def test_a_root_package_still_imports_when_the_root_came_through_pythonpath(
+    launched_client: LanguageClient,
+) -> None:
+    # export PYTHONPATH=$PWD is common course advice, so a file in a subfolder
+    # imports a package at the root through it. The server moves that root
+    # behind the standard library for the runner, it must not throw it away.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    root = launched_client.server_root  # type: ignore[attr-defined]
+    (root / "mypkg").mkdir()
+    (root / "mypkg" / "__init__.py").write_text(
+        '"""Pkg."""\n\n\ndef f() -> int:\n    """Doc."""\n    return 1\n', encoding="utf-8"
+    )
+    (root / "sub").mkdir()
+    source = '"""Use."""\nfrom mypkg import f\n\nX = f()\n'
+    target = root / "sub" / "use.py"
+    target.write_text(source, encoding="utf-8")
+    uri = target.as_uri()
+
+    launched_client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri, language_id="python", version=1, text=source
+            )
+        )
+    )
+    await launched_client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in launched_client.diagnostics[uri]}
+    assert FAILURE_CODE not in codes, [d.message for d in launched_client.diagnostics[uri]]
+    assert "E0401" not in codes, codes
+
+
 async def test_close_clears_diagnostics(client: LanguageClient) -> None:
     uri = _open(client, "no_config.py")
     await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)

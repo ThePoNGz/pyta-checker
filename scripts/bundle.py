@@ -39,7 +39,16 @@ TARBALL_PREFIX = "pyta-lsp-server-"
 # and on any version without PYTHONSAFEPATH. This takes the directory out first and
 # imports nothing until it has. zed/src/logic.rs holds the same line, and a cargo
 # test keeps the two equal.
-SERVER_LAUNCHER = "import os, sys; here = os.path.normcase(os.path.realpath(os.getcwd())); sys.path[:] = [p for p in sys.path if p and os.path.normcase(os.path.realpath(p)) != here]; import runpy; runpy.run_module('pyta_lsp', run_name='__main__', alter_sys=True)"
+SERVER_LAUNCHER = """import os, sys
+def _r(p):
+    try:
+        return os.path.normcase(os.path.realpath(p))
+    except OSError:
+        return os.path.normcase(os.path.abspath(p))
+here = _r(os.getcwd())
+sys.path[:] = [p for p in sys.path if p and _r(p) != here]
+import runpy
+runpy.run_module('pyta_lsp', run_name='__main__', alter_sys=True)"""
 SERVER_ARGS = ("-m", "pyta_lsp")
 MIN_PY = "3.10"
 # No pure wheels on PyPI so we build these from sdist with the extensions off.

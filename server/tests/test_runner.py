@@ -471,3 +471,44 @@ def test_the_runner_launcher_survives_stdlib_names_in_a_package_directory(tmp_pa
     result = json.loads(completed.stdout)
     assert result["ok"], result
     assert "E9999" in {m["msg_id"] for m in result["messages"]}
+
+
+def test_demoted_paths_still_resolve_project_imports_but_after_the_stdlib(tmp_path) -> None:
+    # The server takes the project root out of the PYTHONPATH the runner inherits
+    # and hands it over separately, so a package at the root still imports the
+    # way the course's own run would, while a types.py at the root loses to the
+    # standard library.
+    import json
+    import os
+    import subprocess
+    import sys
+
+    from pyta_lsp.paths import module_launcher
+    from pyta_lsp.runner import ENV_DEMOTED
+
+    project = tmp_path / "project"
+    (project / "mypkg").mkdir(parents=True)
+    (project / "mypkg" / "__init__.py").write_text('"""Pkg."""\n\n\ndef f() -> int:\n    """Doc."""\n    return 1\n', encoding="utf-8")
+    (project / "types.py").write_text("raise RuntimeError('the project types.py was imported')\n", encoding="utf-8")
+    (project / "sub").mkdir()
+    target = project / "sub" / "use.py"
+    target.write_text('"""Use."""\nfrom mypkg import f\n\nX = f()\n', encoding="utf-8")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONSAFEPATH"}
+    env[ENV_DEMOTED] = str(project)
+
+    completed = subprocess.run(
+        [sys.executable, *module_launcher("pyta_lsp.runner"), str(target), "--source-dir", str(target.parent)],
+        cwd=staging,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["ok"], result
+    codes = {m["msg_id"] for m in result["messages"]}
+    assert "E0401" not in codes, codes

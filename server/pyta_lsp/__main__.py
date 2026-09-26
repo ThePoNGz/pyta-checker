@@ -20,33 +20,55 @@ def drop_cwd_from_path(cwd: str | None = None, path: list[str] = sys.path) -> No
         path.remove(entry)
 
 
-def drop_cwd_from_pythonpath(cwd: str | None = None, environ: dict[str, str] = os.environ) -> None:
-    """Take the start directory out of the PYTHONPATH the runner will inherit.
+DEMOTED_VAR = "PYTA_LSP_DEMOTED_PATH"
+
+
+def demote_cwd_in_pythonpath(cwd: str | None = None, environ: dict[str, str] = os.environ) -> None:
+    """Move the start directory from the PYTHONPATH the runner inherits to the back of its path.
 
     Every check runs in a subprocess that takes PYTHONPATH from the environment,
     not from this process's sys.path, so a project root left in the variable
     would shadow the standard library in each check while the server itself
-    came up fine. An empty entry means the cwd to Python, so it goes too.
+    came up fine. It cannot simply go, because a course that says export
+    PYTHONPATH=$PWD relies on it for imports of packages at the root, the way the
+    students own PythonTA run resolves them. So the runner gets it separately
+    and appends it after everything else. An empty entry means the cwd to Python.
     """
     value = environ.get("PYTHONPATH")
     if value is None:
         return
-    target = _resolved(os.getcwd() if cwd is None else cwd)
-    kept = [p for p in value.split(os.pathsep) if p and _resolved(p) != target]
+    start = os.getcwd() if cwd is None else cwd
+    target = _resolved(start)
+    kept: list[str] = []
+    demoted = False
+    for entry in value.split(os.pathsep):
+        if entry and _resolved(entry) != target:
+            kept.append(entry)
+        else:
+            demoted = True
     if kept:
         environ["PYTHONPATH"] = os.pathsep.join(kept)
     else:
         del environ["PYTHONPATH"]
+    if demoted:
+        environ[DEMOTED_VAR] = _real(start)
+
+
+def _real(path: str) -> str:
+    try:
+        return os.path.realpath(path)
+    except OSError:  # some Windows volumes on 3.10 to 3.12
+        return os.path.abspath(path)
 
 
 def _resolved(path: str) -> str:
     # A shell reports the logical path and getcwd the physical one, so only a
     # resolved comparison sees that PYTHONPATH=$PWD is the start directory.
-    return os.path.normcase(os.path.realpath(path))
+    return os.path.normcase(_real(path))
 
 
 drop_cwd_from_path()
-drop_cwd_from_pythonpath()
+demote_cwd_in_pythonpath()
 
 import logging  # noqa: E402
 

@@ -25,6 +25,7 @@ JSON_FORMAT = {"output-format": "pyta-json"}
 JSON_PYLINT_ARGS = ["--output-format", "pyta-json"]
 ENV_LIBS = "PYTA_LSP_LIBS"
 ENV_STRATEGY = "PYTA_LSP_IMPORT_STRATEGY"
+ENV_DEMOTED = "PYTA_LSP_DEMOTED_PATH"
 
 
 def apply_import_strategy(env: Mapping[str, str] = os.environ, path: list[str] = sys.path) -> None:
@@ -36,6 +37,20 @@ def apply_import_strategy(env: Mapping[str, str] = os.environ, path: list[str] =
     for entry in [p for p in path if os.path.normcase(os.path.abspath(p)) == target]:
         path.remove(entry)
     path.append(libs)
+
+
+def append_demoted_paths(env: Mapping[str, str] = os.environ, path: list[str] = sys.path) -> None:
+    """Put the entries the server took out of PYTHONPATH back, behind everything else.
+
+    That is the project root the shell had on PYTHONPATH. Last on the path, a
+    package there still imports the way the course's own run resolves it, while
+    a types.py there can no longer stand in for the standard library.
+    """
+    present = {os.path.normcase(os.path.abspath(p)) for p in path if p}
+    for entry in env.get(ENV_DEMOTED, "").split(os.pathsep):
+        if entry and os.path.normcase(os.path.abspath(entry)) not in present:
+            path.append(entry)
+            present.add(os.path.normcase(os.path.abspath(entry)))
 
 
 def strip_cwd_from_path(cwd: str | None = None, path: list[str] = sys.path) -> None:
@@ -295,6 +310,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     strip_cwd_from_path()
     apply_import_strategy()
+    append_demoted_paths()
     result = run_check(
         Path(args.path),
         config_path=args.config,
