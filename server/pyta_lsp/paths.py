@@ -6,18 +6,11 @@ import os
 import tempfile
 
 # Three copies of this: here, scripts/bundle.py (SERVER_LAUNCHER, for the tarball
-# check) and zed/src/logic.rs (the Zed extension). Tests keep them equal. The
-# realpath fallback is for volumes where ntpath.realpath raises on 3.10 to 3.12.
-_LAUNCHER = """import os, sys
-def _r(p):
-    try:
-        return os.path.normcase(os.path.realpath(p))
-    except OSError:
-        return os.path.normcase(os.path.abspath(p))
-here = _r(os.getcwd())
-sys.path[:] = [p for p in sys.path if p and _r(p) != here]
-import runpy
-runpy.run_module('%s', run_name='__main__', alter_sys=True)"""
+# check) and zed/src/logic.rs (the Zed extension). Tests keep them equal. One line
+# on purpose, since a .bat target on Windows cannot take an argument with a newline
+# in it, so the helper with the realpath fallback (for volumes where ntpath.realpath
+# raises on 3.10 to 3.12) is defined through exec.
+_LAUNCHER = r'''import os, sys; exec("def _r(p):\n    try:\n        return os.path.normcase(os.path.realpath(p))\n    except OSError:\n        return os.path.normcase(os.path.abspath(p))"); here = _r(os.getcwd()); sys.path[:] = [p for p in sys.path if p and _r(p) != here]; import runpy; runpy.run_module('%s', run_name='__main__', alter_sys=True)'''
 
 
 def module_launcher(module: str) -> list[str]:
@@ -27,7 +20,6 @@ def module_launcher(module: str) -> list[str]:
     a student types.py there is imported in place of the standard library one on
     3.10, and on any version without PYTHONSAFEPATH. This clears it first and
     imports nothing until it has. Arguments after it reach the module as with -m.
-    A -c argument may span lines, so no shell ever sees this.
     """
     return ["-c", _LAUNCHER % module]
 

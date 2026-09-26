@@ -24,9 +24,11 @@ pub const PROBE_ARGS: [&str; 1] = ["-c"];
 /// The server is started with -c rather than -m. With -m the start directory is
 /// on sys.path before runpy imports anything, so on 3.10 a types.py in the project
 /// root would be imported in place of the standard library one. This line takes
-/// the start directory out first and imports nothing until it has. scripts/bundle.py
-/// holds the same line for its own check, and a test keeps the two equal.
-pub const SERVER_LAUNCHER: &str = "import os, sys\ndef _r(p):\n    try:\n        return os.path.normcase(os.path.realpath(p))\n    except OSError:\n        return os.path.normcase(os.path.abspath(p))\nhere = _r(os.getcwd())\nsys.path[:] = [p for p in sys.path if p and _r(p) != here]\nimport runpy\nrunpy.run_module('pyta_lsp', run_name='__main__', alter_sys=True)";
+/// the start directory out first and imports nothing until it has. It stays one
+/// line because a .bat target on Windows cannot take an argument with a newline.
+/// scripts/bundle.py holds the same line for its own check, and a test keeps the
+/// two equal.
+pub const SERVER_LAUNCHER: &str = "import os, sys; exec(\"def _r(p):\\n    try:\\n        return os.path.normcase(os.path.realpath(p))\\n    except OSError:\\n        return os.path.normcase(os.path.abspath(p))\"); here = _r(os.getcwd()); sys.path[:] = [p for p in sys.path if p and _r(p) != here]; import runpy; runpy.run_module('pyta_lsp', run_name='__main__', alter_sys=True)";
 pub const SERVER_ARGS: [&str; 2] = ["-c", SERVER_LAUNCHER];
 /// The settings section the server asks for with workspace/configuration.
 pub const SERVER_SECTION: &str = "pythonta";
@@ -98,33 +100,73 @@ pub fn join(base: &str, tail: &str, os: Os) -> String {
     format!("{trimmed}{separator}{tail}")
 }
 
-/// The directory a worktree stands for. Zed opens a single file as a worktree
-/// whose root is that file, and pyenv aborts when PYENV_DIR is not a directory.
-/// Whether the root is a file comes from Zed, since a name proves nothing: a
-/// directory can be called discord.py and a script can have no suffix at all.
-pub fn project_dir(worktree_root: &str, root_is_file: bool) -> String {
-    if !root_is_file {
-        return worktree_root.to_string();
+/// What a worktree root stands for. Zed opens a single file as a worktree whose
+/// root is that file, and pyenv aborts when PYENV_DIR is not a directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectRoot {
+    /// Always a directory, so pyenv can change into it.
+    pub pyenv_dir: String,
+    /// Where a .venv is looked for, in order.
+    pub venv_bases: Vec<String>,
+}
+
+/// Works out the project root from the worktree root and whether Zed could read
+/// the root as a text file. Reading succeeds for a UTF-8 file and fails for a
+/// directory, but also for a file in another encoding, and a name proves nothing
+/// either way: a directory can be called discord.py and a script can have no
+/// suffix. So an unreadable root with a Python name is treated as either, with
+/// the parent for pyenv since that is a directory whichever it is.
+pub fn project_root(worktree_root: &str, root_is_readable_file: bool) -> ProjectRoot {
+    let parent = parent_dir(worktree_root);
+    if root_is_readable_file {
+        return ProjectRoot {
+            pyenv_dir: parent.clone(),
+            venv_bases: vec![parent],
+        };
     }
-    let trimmed = worktree_root.trim_end_matches(['/', '\\']);
+    if looks_like_python_file(worktree_root) {
+        return ProjectRoot {
+            pyenv_dir: parent.clone(),
+            venv_bases: vec![worktree_root.to_string(), parent],
+        };
+    }
+    ProjectRoot {
+        pyenv_dir: worktree_root.to_string(),
+        venv_bases: vec![worktree_root.to_string()],
+    }
+}
+
+fn looks_like_python_file(path: &str) -> bool {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    let name = trimmed
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    name.ends_with(".py") || name.ends_with(".pyi") || name.ends_with(".pyw")
+}
+
+/// The directory holding a path, keeping the separator for a file at the root
+/// of the filesystem or of a drive.
+pub fn parent_dir(path: &str) -> String {
+    let trimmed = path.trim_end_matches(['/', '\\']);
     let Some(index) = trimmed.rfind(['/', '\\']) else {
-        return worktree_root.to_string();
+        return path.to_string();
     };
     let parent = &trimmed[..index];
     if parent.is_empty() || parent.ends_with(':') {
-        // A file at the root of the filesystem or of a drive keeps the separator.
         trimmed[..=index].to_string()
     } else {
         parent.to_string()
     }
 }
 
-pub fn venv_python(project_dir: &str, os: Os) -> String {
+pub fn venv_python(base: &str, os: Os) -> String {
     let relative = match os {
         Os::Windows => ".venv\\Scripts\\python.exe",
         Os::Mac | Os::Linux => ".venv/bin/python",
     };
-    join(project_dir, relative, os)
+    join(base, relative, os)
 }
 
 /// A usable path from what the probe printed, else the path that was probed.
@@ -155,7 +197,11 @@ fn is_absolute(path: &str, os: Os) -> bool {
     }
 }
 
-pub fn interpreter_candidates(settings: &Settings, project_dir: &str, os: Os) -> Vec<Candidate> {
+pub fn interpreter_candidates(
+    settings: &Settings,
+    venv_bases: &[String],
+    os: Os,
+) -> Vec<Candidate> {
     if let Some(configured) = &settings.interpreter {
         return vec![Candidate::Configured(configured.clone())];
     }
@@ -165,7 +211,10 @@ pub fn interpreter_candidates(settings: &Settings, project_dir: &str, os: Os) ->
         Os::Windows => &["python", "python3", "py"],
         Os::Mac | Os::Linux => &["python3", "python"],
     };
-    let mut candidates = vec![Candidate::Venv(venv_python(project_dir, os))];
+    let mut candidates: Vec<Candidate> = venv_bases
+        .iter()
+        .map(|base| Candidate::Venv(venv_python(base, os)))
+        .collect();
     candidates.extend(names.iter().map(|name| Candidate::OnPath(name.to_string())));
     candidates
 }
@@ -531,7 +580,7 @@ mod tests {
             server_dir: None,
         };
         assert_eq!(
-            interpreter_candidates(&configured, "/proj", Os::Linux),
+            interpreter_candidates(&configured, &["/proj".to_string()], Os::Linux),
             vec![Candidate::Configured("/opt/py/bin/python".into())]
         );
     }
@@ -540,7 +589,7 @@ mod tests {
     fn candidates_try_the_venv_then_path_in_os_order() {
         let none = Settings::default();
         assert_eq!(
-            interpreter_candidates(&none, "/proj", Os::Linux),
+            interpreter_candidates(&none, &["/proj".to_string()], Os::Linux),
             vec![
                 Candidate::Venv("/proj/.venv/bin/python".into()),
                 Candidate::OnPath("python3".into()),
@@ -548,11 +597,11 @@ mod tests {
             ]
         );
         assert_eq!(
-            interpreter_candidates(&none, "/proj/", Os::Mac)[0],
+            interpreter_candidates(&none, &["/proj/".to_string()], Os::Mac)[0],
             Candidate::Venv("/proj/.venv/bin/python".into())
         );
         assert_eq!(
-            interpreter_candidates(&none, "C:\\proj", Os::Windows),
+            interpreter_candidates(&none, &["C:\\proj".to_string()], Os::Windows),
             vec![
                 Candidate::Venv("C:\\proj\\.venv\\Scripts\\python.exe".into()),
                 Candidate::OnPath("python".into()),
@@ -606,30 +655,42 @@ mod tests {
 
     #[test]
     fn a_single_file_worktree_stands_for_its_directory() {
+        let file = project_root("/home/me/csc148/a1/tally.py", true);
+        assert_eq!(file.pyenv_dir, "/home/me/csc148/a1");
+        assert_eq!(file.venv_bases, vec!["/home/me/csc148/a1".to_string()]);
+        let script = project_root("/home/me/bin/deploy", true);
+        assert_eq!(script.pyenv_dir, "/home/me/bin");
+        let dir = project_root("/home/me/csc148/a1", false);
+        assert_eq!(dir.pyenv_dir, "/home/me/csc148/a1");
+        assert_eq!(dir.venv_bases, vec!["/home/me/csc148/a1".to_string()]);
+        // Unreadable and named like a Python file: a cp1252 script, or a directory
+        // called discord.py. pyenv gets a directory either way, and both venvs are tried.
+        let either = project_root("/home/me/code/discord.py", false);
+        assert_eq!(either.pyenv_dir, "/home/me/code");
         assert_eq!(
-            project_dir("/home/me/csc148/a1/tally.py", true),
-            "/home/me/csc148/a1"
+            either.venv_bases,
+            vec![
+                "/home/me/code/discord.py".to_string(),
+                "/home/me/code".to_string()
+            ]
         );
-        assert_eq!(project_dir("/home/me/bin/deploy", true), "/home/me/bin");
         assert_eq!(
-            project_dir("C:\\Users\\me\\a1\\tally.PY", true),
+            project_root("C:\\Users\\me\\a1\\tally.PY", true).pyenv_dir,
             "C:\\Users\\me\\a1"
         );
-        assert_eq!(
-            project_dir("/home/me/code/discord.py", false),
-            "/home/me/code/discord.py"
-        );
-        assert_eq!(
-            project_dir("/home/me/csc148/a1/", false),
-            "/home/me/csc148/a1/"
-        );
-        assert_eq!(project_dir("/tally.py", true), "/");
-        assert_eq!(project_dir("C:\\tally.py", true), "C:\\");
-        assert_eq!(project_dir("tally.py", true), "tally.py");
+        assert_eq!(parent_dir("/tally.py"), "/");
+        assert_eq!(parent_dir("C:\\tally.py"), "C:\\");
+        assert_eq!(parent_dir("tally.py"), "tally.py");
         assert_eq!(
             venv_python("/home/me/a1", Os::Linux),
             "/home/me/a1/.venv/bin/python"
         );
+    }
+
+    #[test]
+    fn the_launcher_stays_on_one_line() {
+        assert!(!SERVER_LAUNCHER.contains('\n'));
+        assert!(!SERVER_LAUNCHER.contains('\r'));
     }
 
     #[test]

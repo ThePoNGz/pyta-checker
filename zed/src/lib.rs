@@ -9,7 +9,7 @@ use std::path::Path;
 use logic::{
     choose_interpreter, executable_to_start, interpreter_candidates, is_bare_name, libs_dir,
     newest_server_dir, parse_probe, parse_settings, pick_asset, probe_env, probe_failure,
-    project_dir, server_dir_name, server_env, stale_server_dirs, workspace_configuration,
+    project_root, server_dir_name, server_env, stale_server_dirs, workspace_configuration,
     Candidate, FetchError, Os, ProbeOutcome, Settings, INSTALL_MARKER, NOTICE_VAR, PROBE,
     PROBE_ARGS, REPO, SERVER_ARGS, SERVER_ID,
 };
@@ -109,12 +109,11 @@ impl PytaExtension {
     fn find_python(&self, settings: &Settings, worktree: &zed::Worktree) -> Result<String> {
         let root = worktree.root_path();
         let os = host_os();
-        // Reading the root entry itself succeeds for a single file worktree and
-        // fails for a directory, which is how Zed tells us which one this is.
-        let root_is_file = worktree.read_text_file("").is_ok();
-        let project = project_dir(&root, root_is_file);
-        let env = probe_env(worktree.shell_env(), os, &project);
-        let candidates = interpreter_candidates(settings, &project, os);
+        // Reading the root entry itself succeeds for a single UTF-8 file worktree
+        // and fails for a directory, which is how Zed tells us which one this is.
+        let project = project_root(&root, worktree.read_text_file("").is_ok());
+        let env = probe_env(worktree.shell_env(), os, &project.pyenv_dir);
+        let candidates = interpreter_candidates(settings, &project.venv_bases, os);
         choose_interpreter(&candidates, |candidate| {
             // A bare name is looked up here, because Zed would otherwise treat the
             // command as a path inside the extension directory.
