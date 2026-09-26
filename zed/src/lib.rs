@@ -142,8 +142,9 @@ impl PytaExtension {
             Ok(server_dir) => server_dir,
             // Offline, or the release is not there yet. An earlier download still works.
             Err(error) => {
-                // stderr ends up in the Zed log, so the user can see why the newest
-                // release was not fetched this time.
+                // Zed hands extension stderr to its own stderr, so this shows when Zed
+                // runs from a terminal, and the user can see why the newest release was
+                // not fetched this time.
                 eprintln!("pyta-lsp: {}", error.message());
                 let existing = usable_server_dirs();
                 match newest_server_dir(existing.iter().map(String::as_str)) {

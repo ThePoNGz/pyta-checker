@@ -83,7 +83,7 @@ Zed runs every Python language server you have, so for Only PythonTA add:
 
 ### Anything else
 
-The checker is a standalone language server (`python -m pyta_lsp` over stdio), so any editor that speaks LSP can use it. Each GitHub release attaches `pyta-lsp-server-<version>.tar.gz`: extract it, put its `libs` directory on `PYTHONPATH`, and start `python -m pyta_lsp` with Python 3.10 or newer. If you want a specific editor supported, open a GitHub issue.
+The checker is a standalone language server (`python -m pyta_lsp` over stdio), so any editor that speaks LSP can use it. Releases after v0.1.0 attach `pyta-lsp-server-<version>.tar.gz`: extract it, put its `libs` directory on `PYTHONPATH`, and start `python -m pyta_lsp` with Python 3.10 or newer. Until then, `python scripts/bundle.py build` in a checkout produces the same `libs` directory as `bundled/libs`. If you want a specific editor supported, open a GitHub issue.
 
 ## Troubleshooting
 

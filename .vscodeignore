@@ -25,6 +25,7 @@ eslint.config.mjs
 .editorconfig
 package-lock.json
 *.vsix
+dist/*.tar.gz
 pytacheckericon128.png
 yoyoyoyo.md
 zed/**
