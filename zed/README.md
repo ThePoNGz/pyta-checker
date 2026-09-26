@@ -15,7 +15,7 @@ The extension is not in the Zed extension registry yet, so install it as a dev e
 
 Until a release newer than v0.1.0 is tagged there is no server to download, and the extension says so. In the meantime build the server yourself with `python scripts/bundle.py build` in the checkout and set `serverDir` (below) to its `bundled/libs`.
 
-You need Python 3.10 or newer. The extension looks for it in this order: the `interpreter` setting, `.venv/bin/python` (`.venv\Scripts\python.exe` on Windows) in the project, then `python3` and `python` on your PATH (on Windows `python`, `python3`, then the `py` launcher). The first one that runs is the one it uses, and if that one is older than 3.10 it stops and tells you, rather than trying the next. Zed does not hand its selected Python toolchain to extensions, so set `interpreter` if the one it finds is not the one you want.
+You need Python 3.10 or newer. The extension looks for it in this order: the `interpreter` setting, `.venv/bin/python` (`.venv\Scripts\python.exe` on Windows) in the project, then `python3` and `python` on your PATH (on Windows `python`, `python3`, then the `py` launcher). The first one that runs and is 3.10 or newer is used; older or broken ones are skipped and listed if nothing fits. Zed does not hand its selected Python toolchain to extensions, so set `interpreter` if the one it finds is not the one you want.
 
 ## Settings
 
@@ -41,7 +41,7 @@ Both keys live under `lsp.pyta-lsp.settings` in your Zed settings (`zed: open se
 
 | Key | Meaning |
 | --- | --- |
-| `interpreter` | Absolute path to a Python executable (`~` is not expanded). When set, it is the only one tried, and a path that does not run is reported instead of silently replaced. |
+| `interpreter` | A Python executable: an absolute path (`~` is not expanded), or a bare name such as `python3.12` to look up on your PATH. When set, it is the only one tried, and one that does not run or is older than 3.10 is reported instead of silently replaced. |
 | `serverDir` | Path to a local `libs` directory holding the server and its dependencies. Skips the download. Build one with `python scripts/bundle.py build` in a checkout and point this at its `bundled/libs`. |
 
 `initialization_options` are the checker's own settings: `runOnSave`, `runOnOpen` and `configPath` mean the same as the `pythonta.*` settings in the VS Code extension. `configPath` is a PythonTA config file used when the file has no `check_all(config=...)` of its own, relative to the project root. Put them there, not under `settings`, which only holds the two keys above.
@@ -64,7 +64,7 @@ A list without `"..."` runs only what it names. To keep the others, for example 
 
 ## Reading the log
 
-Two logs matter. `zed: open log` is where the extension reports why it could not find a Python or fetch the server. `dev: open language server logs` (pick `pyta-lsp`) shows what the server printed: which Python it runs under, and any file it could not check and why. A successful check prints nothing there. When the newest release could not be fetched and an earlier download is used instead, that notice only shows when Zed is started from a terminal with `zed --foreground`, which also shows everything else in more detail.
+Two logs matter. `zed: open log` is where the extension reports why it could not find a Python or fetch the server. `dev: open language server logs` (pick `pyta-lsp`) shows what the server printed: which Python it runs under, and any file it could not check and why. A successful check prints nothing there. When the newest release could not be fetched and an earlier download is used instead, the server log says so at startup. For more, quit Zed and start it from a terminal with `zed --foreground`.
 
 If the extension reports that no Python was found, or that the one it found is too old, set `interpreter`. If it reports that the server could not be downloaded, check your connection, or set `serverDir` to a local build.
 

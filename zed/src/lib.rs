@@ -7,10 +7,10 @@ use std::fs;
 use std::path::Path;
 
 use logic::{
-    check_version, interpreter_candidates, libs_dir, newest_server_dir, parse_probe,
-    parse_settings, pick_asset, probe_failure, server_dir_name, server_env, stale_server_dirs,
-    workspace_configuration, Candidate, FetchError, Os, PythonVersion, Settings, INSTALL_MARKER,
-    PROBE, PROBE_ARGS, REPO, SERVER_ARGS, SERVER_ID,
+    choose_interpreter, interpreter_candidates, is_bare_name, libs_dir, newest_server_dir,
+    parse_probe, parse_settings, pick_asset, probe_failure, server_dir_name, server_env,
+    stale_server_dirs, workspace_configuration, Candidate, FetchError, Os, ProbeOutcome, Settings,
+    INSTALL_MARKER, NOTICE_VAR, PROBE, PROBE_ARGS, PYENV_DIR_VAR, REPO, SERVER_ARGS, SERVER_ID,
 };
 use zed_extension_api::settings::LspSettings;
 use zed_extension_api::{self as zed, LanguageServerId, LanguageServerInstallationStatus, Result};
@@ -19,6 +19,9 @@ struct PytaExtension {
     // The server directory the last start used, relative to the work dir, so one
     // Zed session looks the release up once.
     server_dir: Option<String>,
+    // Something the user should know about the last server lookup. The server
+    // logs it at startup, since the extension has no log of its own.
+    notice: Option<String>,
 }
 
 fn host_os() -> Os {
@@ -29,18 +32,31 @@ fn host_os() -> Os {
     }
 }
 
-fn probe(python: &str) -> Result<PythonVersion> {
-    let output = zed::process::Command::new(python)
+/// Runs the probe the way the server will run: with the shell env, and with pyenv
+/// pointed at the project so a shim resolves the same version in both places.
+fn probe(python: &str, shell_env: &[(String, String)], worktree_root: &str) -> ProbeOutcome {
+    let mut command = zed::process::Command::new(python)
         .args(PROBE_ARGS)
         .arg(PROBE)
-        .output()?;
+        .envs(shell_env.iter().cloned())
+        .env(PYENV_DIR_VAR, worktree_root);
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) => return ProbeOutcome::Failed(error),
+    };
     if output.status != Some(0) {
-        return Err(probe_failure(
+        return ProbeOutcome::Failed(probe_failure(
             output.status,
             &String::from_utf8_lossy(&output.stderr),
         ));
     }
-    parse_probe(&String::from_utf8_lossy(&output.stdout))
+    match parse_probe(&String::from_utf8_lossy(&output.stdout)) {
+        Ok(probed) => ProbeOutcome::Found(
+            probed.version,
+            probed.executable.unwrap_or_else(|| python.to_string()),
+        ),
+        Err(reason) => ProbeOutcome::Failed(reason),
+    }
 }
 
 /// The absolute extension work dir. Zed passes it in PWD with forward slashes on
@@ -91,40 +107,26 @@ fn all_server_dirs() -> Vec<String> {
 
 impl PytaExtension {
     fn find_python(&self, settings: &Settings, worktree: &zed::Worktree) -> Result<String> {
-        let mut tried: Vec<String> = Vec::new();
-        for candidate in interpreter_candidates(settings, &worktree.root_path(), host_os()) {
-            let python = match &candidate {
-                Candidate::Configured(path) | Candidate::Venv(path) => path.clone(),
-                Candidate::OnPath(name) => match worktree.which(name) {
-                    Some(path) => path,
-                    None => {
-                        tried.push(format!("{name} (not on PATH)"));
-                        continue;
-                    }
-                },
+        let root = worktree.root_path();
+        let shell_env = worktree.shell_env();
+        let candidates = interpreter_candidates(settings, &root, host_os());
+        choose_interpreter(&candidates, |candidate| {
+            // A bare name is looked up here, because Zed would otherwise treat the
+            // command as a path inside the extension directory.
+            let python = match candidate {
+                Candidate::OnPath(name) => worktree.which(name),
+                Candidate::Configured(value) if is_bare_name(value) => worktree.which(value),
+                Candidate::Configured(path) | Candidate::Venv(path) => Some(path.clone()),
             };
-            match probe(&python) {
-                Ok(version) => {
-                    check_version(version, &python)?;
-                    return Ok(python);
-                }
-                Err(reason) if matches!(candidate, Candidate::Configured(_)) => {
-                    return Err(format!(
-                        "lsp.pyta-lsp.settings.interpreter is {python}, which could not be run: {reason}. \
-                         Fix the path in your Zed settings (use an absolute path, ~ is not expanded)."
-                    ));
-                }
-                Err(reason) => tried.push(format!("{python} ({reason})")),
+            match python {
+                Some(python) => probe(&python, &shell_env, &root),
+                None => ProbeOutcome::Missing,
             }
-        }
-        Err(format!(
-            "No Python was found for PythonTA. Tried {}. Install Python 3.10 or newer, \
-             or set lsp.pyta-lsp.settings.interpreter in your Zed settings.",
-            tried.join(", ")
-        ))
+        })
     }
 
     fn server_libs(&mut self, id: &LanguageServerId, settings: &Settings) -> Result<String> {
+        self.notice = None;
         if let Some(dir) = &settings.server_dir {
             return Ok(dir.clone());
         }
@@ -142,13 +144,15 @@ impl PytaExtension {
             Ok(server_dir) => server_dir,
             // Offline, or the release is not there yet. An earlier download still works.
             Err(error) => {
-                // Zed hands extension stderr to its own stderr, so this shows when Zed
-                // runs from a terminal, and the user can see why the newest release was
-                // not fetched this time.
-                eprintln!("pyta-lsp: {}", error.message());
                 let existing = usable_server_dirs();
                 match newest_server_dir(existing.iter().map(String::as_str)) {
-                    Some(existing) => existing.to_string(),
+                    Some(existing) => {
+                        self.notice = Some(format!(
+                            "{} Using the earlier download in {existing} for now.",
+                            error.message()
+                        ));
+                        existing.to_string()
+                    }
                     None => {
                         let message = error.message();
                         zed::set_language_server_installation_status(
@@ -244,7 +248,10 @@ impl PytaExtension {
 
 impl zed::Extension for PytaExtension {
     fn new() -> Self {
-        Self { server_dir: None }
+        Self {
+            server_dir: None,
+            notice: None,
+        }
     }
 
     fn language_server_command(
@@ -256,10 +263,14 @@ impl zed::Extension for PytaExtension {
         let settings = parse_settings(lsp.settings.as_ref())?;
         let python = self.find_python(&settings, worktree)?;
         let libs = self.server_libs(id, &settings)?;
+        let mut env = server_env(worktree.shell_env(), &libs, host_os());
+        if let Some(notice) = &self.notice {
+            env.push((NOTICE_VAR.to_string(), notice.clone()));
+        }
         Ok(zed::Command {
             command: python,
             args: SERVER_ARGS.iter().map(|arg| arg.to_string()).collect(),
-            env: server_env(worktree.shell_env(), &libs, host_os()),
+            env,
         })
     }
 

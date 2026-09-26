@@ -11,13 +11,28 @@ pub const SERVER_PREFIX: &str = "pyta-lsp-server-";
 /// Written into a server directory once its download was checked, so a directory
 /// Zed was killed in the middle of unpacking is never taken for a finished one.
 pub const INSTALL_MARKER: &str = "installed";
-pub const PROBE: &str = "import sys; print(sys.version_info[0], sys.version_info[1])";
+/// Prints the version on one line and the real executable on the next, so the
+/// server is started with exactly what answered the probe, not a shim or launcher.
+pub const PROBE: &str =
+    "import sys; print(sys.version_info[0], sys.version_info[1]); print(sys.executable)";
 /// -E and -s keep the shell PYTHON* variables and the user site out of the probe,
 /// and unlike -I they exist on Python 2, so an old python still reports its version.
 pub const PROBE_ARGS: [&str; 3] = ["-E", "-s", "-c"];
-pub const SERVER_ARGS: [&str; 2] = ["-m", "pyta_lsp"];
+/// The server is started with -c rather than -m. With -m the start directory is
+/// on sys.path before runpy imports anything, so on 3.10 a types.py in the project
+/// root would be imported in place of the standard library one. This line takes
+/// the start directory out first and imports nothing until it has. scripts/bundle.py
+/// holds the same line for its own check, and a test keeps the two equal.
+pub const SERVER_LAUNCHER: &str = "import os, sys; here = os.path.normcase(os.getcwd()); sys.path[:] = [p for p in sys.path if p and os.path.normcase(os.path.abspath(p)) != here]; import runpy; runpy.run_module('pyta_lsp', run_name='__main__', alter_sys=True)";
+pub const SERVER_ARGS: [&str; 2] = ["-c", SERVER_LAUNCHER];
 /// The settings section the server asks for with workspace/configuration.
 pub const SERVER_SECTION: &str = "pythonta";
+/// The server logs this at startup, which is the one place a note from the
+/// extension reliably reaches the user (the language server log in Zed).
+pub const NOTICE_VAR: &str = "PYTA_LSP_NOTICE";
+/// pyenv reads the project version file from here, so the probe sees the same
+/// Python the server will when Zed starts it in the project root.
+pub const PYENV_DIR_VAR: &str = "PYENV_DIR";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Os {
@@ -92,8 +107,8 @@ pub fn interpreter_candidates(settings: &Settings, worktree_root: &str, os: Os) 
     if let Some(configured) = &settings.interpreter {
         return vec![Candidate::Configured(configured.clone())];
     }
-    // Same order as the VS Code client. On Windows the py launcher is often the
-    // only Python on PATH, and it runs the same -m pyta_lsp command line.
+    // Same names and order as the VS Code client. On Windows the py launcher is
+    // often the only Python on PATH, and it runs the same server command line.
     let names: &[&str] = match os {
         Os::Windows => &["python", "python3", "py"],
         Os::Mac | Os::Linux => &["python3", "python"],
@@ -109,23 +124,115 @@ pub struct PythonVersion {
     pub minor: u32,
 }
 
-/// Reads the two numbers the probe prints. Python 2 prints them as a tuple, so
-/// anything that isnt a digit is a separator.
-pub fn parse_probe(stdout: &str) -> Result<PythonVersion, String> {
-    let numbers: Vec<u32> = stdout
+/// What the probe printed: the version, and the executable when the line was there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Probed {
+    pub version: PythonVersion,
+    pub executable: Option<String>,
+}
+
+/// Reads the two numbers on the first line the probe prints, and the executable on
+/// the second. Python 2 prints the numbers as a tuple, so on that line anything
+/// that isnt a digit is a separator.
+pub fn parse_probe(stdout: &str) -> Result<Probed, String> {
+    let mut lines = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let first = lines.next().unwrap_or("");
+    let numbers: Vec<u32> = first
         .split(|c: char| !c.is_ascii_digit())
         .filter(|part| !part.is_empty())
         .filter_map(|part| part.parse().ok())
         .collect();
-    match numbers.as_slice() {
-        [major, minor, ..] => Ok(PythonVersion {
+    let version = match numbers.as_slice() {
+        [major, minor, ..] => PythonVersion {
             major: *major,
             minor: *minor,
-        }),
-        _ => Err(format!(
-            "the version probe printed {stdout:?} instead of a version"
-        )),
+        },
+        _ => {
+            return Err(format!(
+                "the version probe printed {stdout:?} instead of a version"
+            ))
+        }
+    };
+    Ok(Probed {
+        version,
+        executable: lines.next().map(str::to_string),
+    })
+}
+
+/// Whether an `interpreter` setting is a name to look up on PATH rather than a path.
+pub fn is_bare_name(interpreter: &str) -> bool {
+    !interpreter.contains(['/', '\\'])
+}
+
+/// What running the probe on one candidate turned up.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProbeOutcome {
+    /// Nothing to run: a PATH name that is not there.
+    Missing,
+    /// It ran, or failed to start, without printing a version.
+    Failed(String),
+    /// It answered. The path is what to start the server with.
+    Found(PythonVersion, String),
+}
+
+fn candidate_label(candidate: &Candidate) -> &str {
+    match candidate {
+        Candidate::Configured(path) | Candidate::Venv(path) | Candidate::OnPath(path) => path,
     }
+}
+
+/// Picks the interpreter the server runs under, given a way to probe each candidate.
+///
+/// The configured one is the users explicit choice, so when it does not run or is
+/// too old the user hears exactly that. The others are guesses, so an old or broken
+/// one is noted and the next is tried, which is how the VS Code client behaves too.
+pub fn choose_interpreter(
+    candidates: &[Candidate],
+    mut probe: impl FnMut(&Candidate) -> ProbeOutcome,
+) -> Result<String, String> {
+    let mut tried: Vec<String> = Vec::new();
+    for candidate in candidates {
+        let label = candidate_label(candidate);
+        let configured = matches!(candidate, Candidate::Configured(_));
+        match probe(candidate) {
+            ProbeOutcome::Found(version, executable) => {
+                if (version.major, version.minor) >= MIN_PYTHON {
+                    return Ok(executable);
+                }
+                if configured {
+                    return Err(check_version(version, label).unwrap_err());
+                }
+                tried.push(format!(
+                    "{label} (Python {}.{})",
+                    version.major, version.minor
+                ));
+            }
+            ProbeOutcome::Missing if configured => {
+                return Err(format!(
+                    "lsp.pyta-lsp.settings.interpreter is {label}, which is not on PATH. \
+                     Fix it in your Zed settings, or use an absolute path (~ is not expanded)."
+                ));
+            }
+            ProbeOutcome::Missing => tried.push(format!("{label} (not on PATH)")),
+            ProbeOutcome::Failed(reason) if configured => {
+                return Err(format!(
+                    "lsp.pyta-lsp.settings.interpreter is {label}, which could not be run: {reason}. \
+                     Fix the path in your Zed settings (use an absolute path, ~ is not expanded)."
+                ));
+            }
+            ProbeOutcome::Failed(reason) => tried.push(format!("{label} ({reason})")),
+        }
+    }
+    Err(format!(
+        "No Python {}.{} or newer was found for PythonTA. Tried {}. Install a newer Python, \
+         or set lsp.pyta-lsp.settings.interpreter in your Zed settings.",
+        MIN_PYTHON.0,
+        MIN_PYTHON.1,
+        tried.join(", ")
+    ))
 }
 
 /// What to tell the user when the probe ran but did not print a version.
@@ -237,44 +344,59 @@ pub fn workspace_configuration(initialization_options: Option<Value>) -> Value {
     Value::Object(wrapped)
 }
 
-/// Variables from the shell that point at some other Python and outrank the one we picked.
-/// Zed merges what we return over its own process environment, so this only covers
-/// the shell env we were handed, not what Zed itself was launched with.
-const DROPPED: [&str; 4] = ["PYTHONHOME", "VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONSTARTUP"];
+/// Variables from the shell that point at some other Python and outrank the one we
+/// picked. Zed lays the shell env back over whatever we return, so a variable we
+/// left out comes straight back. Setting it empty is what sticks, and Python
+/// treats an empty value as unset.
+const EMPTIED: [&str; 4] = ["PYTHONHOME", "VIRTUAL_ENV", "CONDA_PREFIX", "PYTHONSTARTUP"];
+const FORCED: [(&str, &str); 4] = [
+    ("PYTHONSAFEPATH", "1"),
+    ("PYTHONUTF8", "1"),
+    ("PYTHONIOENCODING", "utf-8"),
+    ("PYTHONUNBUFFERED", "1"),
+];
 
 /// The environment the server runs in: the shell env with the bundle first on
 /// PYTHONPATH and the same guards the VS Code client sets.
+///
+/// Windows env keys are case insensitive but Zed merges by exact string, so a
+/// value goes out under the spelling the shell used, or two keys would race.
 pub fn server_env(base: Vec<(String, String)>, libs: &str, os: Os) -> Vec<(String, String)> {
     let delimiter = if os == Os::Windows { ';' } else { ':' };
-    let mut python_path = libs.to_string();
     let mut env: Vec<(String, String)> = Vec::with_capacity(base.len() + 5);
+    let mut python_path_key: Option<String> = None;
+    let mut python_path = libs.to_string();
+    let mut forced_seen: Vec<&str> = Vec::new();
     for (key, value) in base {
         let upper = key.to_ascii_uppercase();
         if upper == "PYTHONPATH" {
             if !value.is_empty() {
                 python_path = format!("{libs}{delimiter}{value}");
             }
+            python_path_key = Some(key);
             continue;
         }
-        if DROPPED.contains(&upper.as_str()) || upper.starts_with("PYTHON") && is_overridden(&upper)
-        {
+        if EMPTIED.contains(&upper.as_str()) {
+            env.push((key, String::new()));
+            continue;
+        }
+        if let Some((name, forced)) = FORCED.iter().find(|(name, _)| *name == upper) {
+            forced_seen.push(name);
+            env.push((key, forced.to_string()));
             continue;
         }
         env.push((key, value));
     }
-    env.push(("PYTHONPATH".into(), python_path));
-    env.push(("PYTHONSAFEPATH".into(), "1".into()));
-    env.push(("PYTHONUTF8".into(), "1".into()));
-    env.push(("PYTHONIOENCODING".into(), "utf-8".into()));
-    env.push(("PYTHONUNBUFFERED".into(), "1".into()));
+    env.push((
+        python_path_key.unwrap_or_else(|| "PYTHONPATH".to_string()),
+        python_path,
+    ));
+    for (name, forced) in FORCED {
+        if !forced_seen.contains(&name) {
+            env.push((name.to_string(), forced.to_string()));
+        }
+    }
     env
-}
-
-fn is_overridden(key: &str) -> bool {
-    matches!(
-        key,
-        "PYTHONSAFEPATH" | "PYTHONUTF8" | "PYTHONIOENCODING" | "PYTHONUNBUFFERED"
-    )
 }
 
 #[cfg(test)]
@@ -363,18 +485,113 @@ mod tests {
     #[test]
     fn probe_output_parses_on_every_python() {
         assert_eq!(
-            parse_probe("3 12\n").unwrap(),
-            PythonVersion {
-                major: 3,
-                minor: 12
+            parse_probe("3 12\n/usr/bin/python3.12\n").unwrap(),
+            Probed {
+                version: PythonVersion {
+                    major: 3,
+                    minor: 12
+                },
+                executable: Some("/usr/bin/python3.12".into()),
             }
         );
         assert_eq!(
-            parse_probe("(2, 7)\r\n").unwrap(),
-            PythonVersion { major: 2, minor: 7 }
+            parse_probe("3 13\r\nC:\\Program Files\\Python313\\python.exe\r\n")
+                .unwrap()
+                .executable
+                .as_deref(),
+            Some("C:\\Program Files\\Python313\\python.exe")
         );
+        let old = parse_probe("(2, 7)\r\n").unwrap();
+        assert_eq!(old.version, PythonVersion { major: 2, minor: 7 });
+        assert_eq!(old.executable, None);
         assert!(parse_probe("").is_err());
         assert!(parse_probe("Python\n").is_err());
+    }
+
+    #[test]
+    fn bare_names_are_told_apart_from_paths() {
+        assert!(is_bare_name("python3.12"));
+        assert!(is_bare_name("py"));
+        assert!(!is_bare_name("/usr/bin/python3"));
+        assert!(!is_bare_name("C:\\Python312\\python.exe"));
+        assert!(!is_bare_name("./venv/bin/python"));
+    }
+
+    fn version(major: u32, minor: u32) -> PythonVersion {
+        PythonVersion { major, minor }
+    }
+
+    #[test]
+    fn choosing_skips_old_and_broken_guesses_and_keeps_going() {
+        let candidates = vec![
+            Candidate::Venv("/proj/.venv/bin/python".into()),
+            Candidate::OnPath("python3".into()),
+            Candidate::OnPath("python".into()),
+        ];
+        let chosen = choose_interpreter(&candidates, |candidate| match candidate {
+            Candidate::Venv(_) => ProbeOutcome::Failed("No such file (os error 2)".into()),
+            Candidate::OnPath(name) if name == "python3" => {
+                ProbeOutcome::Found(version(3, 9), "/usr/bin/python3.9".into())
+            }
+            _ => ProbeOutcome::Found(version(3, 12), "/opt/py/bin/python3.12".into()),
+        });
+        assert_eq!(chosen.unwrap(), "/opt/py/bin/python3.12");
+    }
+
+    #[test]
+    fn choosing_reports_everything_it_tried_when_nothing_fits() {
+        let candidates = vec![
+            Candidate::Venv("C:\\proj\\.venv\\Scripts\\python.exe".into()),
+            Candidate::OnPath("python".into()),
+            Candidate::OnPath("py".into()),
+        ];
+        let err = choose_interpreter(&candidates, |candidate| match candidate {
+            Candidate::Venv(_) => ProbeOutcome::Failed("not found".into()),
+            Candidate::OnPath(name) if name == "python" => {
+                ProbeOutcome::Found(version(3, 8), "C:\\Python38\\python.exe".into())
+            }
+            _ => ProbeOutcome::Missing,
+        })
+        .unwrap_err();
+        assert!(
+            err.starts_with("No Python 3.10 or newer was found"),
+            "{err}"
+        );
+        assert!(err.contains("python.exe (not found)"), "{err}");
+        assert!(err.contains("python (Python 3.8)"), "{err}");
+        assert!(err.contains("py (not on PATH)"), "{err}");
+        assert!(err.contains("lsp.pyta-lsp.settings.interpreter"), "{err}");
+    }
+
+    #[test]
+    fn a_configured_interpreter_is_never_silently_replaced() {
+        let configured = vec![Candidate::Configured("/opt/old/python".into())];
+        let err = choose_interpreter(&configured, |_| {
+            ProbeOutcome::Found(version(3, 9), "/opt/old/python".into())
+        })
+        .unwrap_err();
+        assert!(err.contains("/opt/old/python is Python 3.9"), "{err}");
+        let err = choose_interpreter(&configured, |_| ProbeOutcome::Failed("exit code 1".into()))
+            .unwrap_err();
+        assert!(err.contains("could not be run: exit code 1"), "{err}");
+        let err = choose_interpreter(&configured, |_| ProbeOutcome::Missing).unwrap_err();
+        assert!(err.contains("is not on PATH"), "{err}");
+        let ok = choose_interpreter(&configured, |_| {
+            ProbeOutcome::Found(version(3, 11), "/opt/old/python".into())
+        });
+        assert_eq!(ok.unwrap(), "/opt/old/python");
+    }
+
+    #[test]
+    fn the_launcher_line_matches_the_one_bundle_py_checks() {
+        // The Python side cannot import this crate, so the two copies are kept
+        // equal here instead.
+        let bundle = include_str!("../../scripts/bundle.py");
+        assert!(
+            bundle.contains(SERVER_LAUNCHER),
+            "scripts/bundle.py SERVER_LAUNCHER differs"
+        );
+        assert_eq!(SERVER_ARGS[0], "-c");
     }
 
     #[test]
@@ -480,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn server_env_puts_the_bundle_first_and_drops_the_shell_python_pointers() {
+    fn server_env_puts_the_bundle_first_and_empties_the_shell_python_pointers() {
         let base = vec![
             ("PATH".to_string(), "/usr/bin".to_string()),
             ("VIRTUAL_ENV".to_string(), "/proj/.venv".to_string()),
@@ -493,8 +710,10 @@ mod tests {
             pairs(&env),
             vec![
                 ("PATH", "/usr/bin"),
-                ("PYTHONPATH", "/work/libs:/extra"),
+                ("VIRTUAL_ENV", ""),
                 ("PYTHONSAFEPATH", "1"),
+                ("CONDA_PREFIX", ""),
+                ("PYTHONPATH", "/work/libs:/extra"),
                 ("PYTHONUTF8", "1"),
                 ("PYTHONIOENCODING", "utf-8"),
                 ("PYTHONUNBUFFERED", "1"),
@@ -503,14 +722,44 @@ mod tests {
     }
 
     #[test]
+    fn server_env_keeps_the_shell_spelling_of_a_windows_key() {
+        // Zed merges by exact key and Windows reads keys case insensitively, so a
+        // second spelling of the same variable would leave the winner to chance.
+        let base = vec![
+            ("Path".to_string(), "C:\\bin".to_string()),
+            ("PythonPath".to_string(), "C:\\mylibs".to_string()),
+            ("PythonHome".to_string(), "C:\\old".to_string()),
+            ("pythonutf8".to_string(), "0".to_string()),
+        ];
+        let env = server_env(base, "C:/work/libs", Os::Windows);
+        assert_eq!(
+            pairs(&env),
+            vec![
+                ("Path", "C:\\bin"),
+                ("PythonHome", ""),
+                ("pythonutf8", "1"),
+                ("PythonPath", "C:/work/libs;C:\\mylibs"),
+                ("PYTHONSAFEPATH", "1"),
+                ("PYTHONIOENCODING", "utf-8"),
+                ("PYTHONUNBUFFERED", "1"),
+            ]
+        );
+        let python_paths = pairs(&env)
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("pythonpath"))
+            .count();
+        assert_eq!(python_paths, 1);
+    }
+
+    #[test]
     fn server_env_without_a_shell_pythonpath_is_just_the_bundle() {
         let env = server_env(
             vec![("Path".into(), "C:\\bin".into())],
-            "C:\\work\\libs",
+            "C:/work/libs",
             Os::Windows,
         );
         assert_eq!(pairs(&env)[0], ("Path", "C:\\bin"));
-        assert!(pairs(&env).contains(&("PYTHONPATH", "C:\\work\\libs")));
+        assert!(pairs(&env).contains(&("PYTHONPATH", "C:/work/libs")));
         let env = server_env(
             vec![("PYTHONPATH".into(), "".into())],
             "/work/libs",
