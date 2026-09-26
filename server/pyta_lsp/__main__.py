@@ -35,7 +35,7 @@ def demote_cwd_in_pythonpath(cwd: str | None = None, environ: dict[str, str] = o
     and appends it after everything else. An empty entry means the cwd to Python.
     """
     value = environ.get("PYTHONPATH")
-    if value is None:
+    if not value:  # Python ignores an empty PYTHONPATH, so it does not mean the cwd
         return
     start = os.getcwd() if cwd is None else cwd
     target = _resolved(start)

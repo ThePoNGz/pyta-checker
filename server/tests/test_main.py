@@ -148,6 +148,11 @@ def test_demote_cwd_in_pythonpath_removes_an_emptied_variable(tmp_path) -> None:
     demote_cwd_in_pythonpath(str(tmp_path), elsewhere)
     assert elsewhere == {"PYTHONPATH": "/elsewhere"}
 
+    # Python ignores an empty PYTHONPATH, so it does not mean the cwd.
+    empty = {"PYTHONPATH": ""}
+    demote_cwd_in_pythonpath(str(tmp_path), empty)
+    assert empty == {"PYTHONPATH": ""}
+
 
 def test_resolved_falls_back_when_realpath_raises(tmp_path, monkeypatch) -> None:
     # ntpath.realpath re-raises some volume errors on 3.10 to 3.12, which abspath
