@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -15,7 +15,10 @@ describe('the VSIX contents', () => {
     mkdirSync(dist, { recursive: true });
     writeFileSync(marker, '');
     try {
-      const listing = execFileSync(join(root, 'node_modules', '.bin', 'vsce'), ['ls', '--no-dependencies'], {
+      // The .bin entry is a .cmd shim on Windows, which execFileSync cannot start
+      // without a shell, so the CLI script is run with this node directly.
+      const vsce = join(root, 'node_modules', '@vscode', 'vsce', 'vsce');
+      const listing = execFileSync(process.execPath, [vsce, 'ls', '--no-dependencies'], {
         cwd: root,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
@@ -23,7 +26,14 @@ describe('the VSIX contents', () => {
       expect(listing).not.toContain('pyta-lsp-server-0.0.0-vsixtest.tar.gz');
     } finally {
       rmSync(marker, { force: true });
-      if (!hadDist) rmSync(dist, { recursive: true, force: true });
+      if (!hadDist) {
+        // Only the empty folder this test made. A build that landed meanwhile stays.
+        try {
+          rmdirSync(dist);
+        } catch {
+          // not empty any more, or already gone
+        }
+      }
     }
   }, 60_000);
 });

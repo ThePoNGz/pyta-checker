@@ -126,11 +126,13 @@ impl PytaExtension {
     }
 
     fn server_libs(&mut self, id: &LanguageServerId, settings: &Settings) -> Result<String> {
-        self.notice = None;
         if let Some(dir) = &settings.server_dir {
+            self.notice = None;
             return Ok(dir.clone());
         }
         let work_dir = work_dir()?;
+        // A restart in the same session reuses the directory, and the notice that
+        // explained it the first time, since the reason has not changed.
         if let Some(server_dir) = &self.server_dir {
             if is_installed(server_dir) {
                 return Ok(libs_dir(&work_dir, server_dir));
@@ -141,7 +143,10 @@ impl PytaExtension {
             &LanguageServerInstallationStatus::CheckingForUpdate,
         );
         let server_dir = match self.install_latest(id) {
-            Ok(server_dir) => server_dir,
+            Ok(server_dir) => {
+                self.notice = None;
+                server_dir
+            }
             // Offline, or the release is not there yet. An earlier download still works.
             Err(error) => {
                 let existing = usable_server_dirs();
