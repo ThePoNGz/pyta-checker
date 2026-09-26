@@ -1,4 +1,7 @@
 import logging
+import os
+
+import pytest
 
 from pyta_lsp.__main__ import configure_logging
 
@@ -111,3 +114,53 @@ def test_main_logs_a_notice_from_the_editor(monkeypatch, caplog) -> None:
 
     notices = [r for r in caplog.records if "earlier download" in r.getMessage()]
     assert notices and notices[0].levelno == logging.WARNING
+
+
+def test_drop_cwd_from_pythonpath_cleans_what_the_runner_inherits(tmp_path, monkeypatch) -> None:
+    # The runner subprocess takes PYTHONPATH from the environment, not from this
+    # process's sys.path, so a project root there would shadow the stdlib in
+    # every check even though the server itself came up fine.
+    from pyta_lsp.__main__ import drop_cwd_from_pythonpath
+
+    libs = str(tmp_path / "libs")
+    environ = {"PYTHONPATH": os.pathsep.join([libs, str(tmp_path), "", "."]), "HOME": "/h"}
+    monkeypatch.chdir(tmp_path)
+
+    drop_cwd_from_pythonpath(str(tmp_path), environ)
+
+    assert environ == {"PYTHONPATH": libs, "HOME": "/h"}
+
+
+def test_drop_cwd_from_pythonpath_removes_an_emptied_variable(tmp_path) -> None:
+    from pyta_lsp.__main__ import drop_cwd_from_pythonpath
+
+    environ = {"PYTHONPATH": str(tmp_path)}
+    drop_cwd_from_pythonpath(str(tmp_path), environ)
+    assert environ == {}
+
+    untouched: dict[str, str] = {}
+    drop_cwd_from_pythonpath(str(tmp_path), untouched)
+    assert untouched == {}
+
+
+def test_drop_cwd_from_path_sees_through_a_symlink(tmp_path, monkeypatch) -> None:
+    # A shell PYTHONPATH=$PWD holds the logical path and os.getcwd() the physical
+    # one, so comparing without resolving would keep the project on the path.
+    import sys
+
+    from pyta_lsp.__main__ import drop_cwd_from_path, drop_cwd_from_pythonpath
+
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(real, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available here")
+    path = [str(link), "/elsewhere"]
+    drop_cwd_from_path(str(real), path)
+    assert path == ["/elsewhere"]
+
+    environ = {"PYTHONPATH": str(link)}
+    drop_cwd_from_pythonpath(str(real), environ)
+    assert environ == {}

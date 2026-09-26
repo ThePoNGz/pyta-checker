@@ -55,11 +55,15 @@ def _launcher() -> str:
     return module.SERVER_LAUNCHER
 
 
-def _client_started_in_a_shadowing_directory(names: tuple[str, ...] = ("json.py",)) -> LanguageClient:
+def _client_started_in_a_shadowing_directory(
+    names: tuple[str, ...] = ("json.py",), root_on_pythonpath: bool = False
+) -> LanguageClient:
     """A client whose server starts from a directory holding files named after stdlib modules.
 
     Zed starts language servers at the project root, and nothing stops a
     student from keeping a file named after a standard library module there.
+    With root_on_pythonpath the same directory also arrives through PYTHONPATH,
+    which the runner subprocess inherits.
     """
     client = pytest_lsp.make_test_lsp_client()
     root = Path(tempfile.mkdtemp(prefix="pyta-lsp-shadow-"))
@@ -69,6 +73,10 @@ def _client_started_in_a_shadowing_directory(names: tuple[str, ...] = ("json.py"
     start_io = client.start_io
 
     async def start_io_in_root(cmd: str, *args, **kwargs) -> None:
+        if root_on_pythonpath:
+            env = dict(kwargs.get("env") or os.environ)
+            env["PYTHONPATH"] = os.pathsep.join(filter(None, [env.get("PYTHONPATH"), str(root)]))
+            kwargs["env"] = env
         await start_io(cmd, *args, cwd=str(root), **kwargs)
 
     client.start_io = start_io_in_root  # type: ignore[method-assign]
@@ -96,7 +104,9 @@ async def shadowed_client(lsp_client: LanguageClient) -> AsyncGenerator[None, No
 
 
 def _client_in_a_root_full_of_stdlib_names() -> LanguageClient:
-    return _client_started_in_a_shadowing_directory(("types.py", "operator.py", "json.py"))
+    return _client_started_in_a_shadowing_directory(
+        ("types.py", "operator.py", "json.py"), root_on_pythonpath=True
+    )
 
 
 # No PYTHONSAFEPATH here on purpose: the launcher has to hold up without it.
@@ -171,7 +181,9 @@ async def test_the_launcher_checks_from_a_root_full_of_stdlib_names(
 ) -> None:
     # The Zed extension starts the server with the -c launcher in the project root.
     # types.py and operator.py are imported by runpy before __main__ could strip
-    # anything, so only a launcher that clears the path first survives them.
+    # anything, so only a launcher that clears the path first survives them. The
+    # root is on PYTHONPATH as well, and the check has to come back clean, so the
+    # runner subprocess must not inherit it.
     from pyta_lsp.diagnostics import FAILURE_CODE
 
     root = launched_client.server_root  # type: ignore[attr-defined]
@@ -388,6 +400,37 @@ async def test_a_package_module_is_not_given_false_import_errors(
     await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
 
     assert "E0611" not in {d.code for d in client.diagnostics[uri]}
+
+
+async def test_a_package_module_beside_stdlib_names_is_still_checked(
+    client: LanguageClient, tmp_path
+) -> None:
+    # The runner for a package module starts in the package directory. A student
+    # types.py there must not be what the runner imports, on any Python.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    package = tmp_path / "mypkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    for name in ("types.py", "operator.py", "json.py"):
+        (package / name).write_text(f"raise RuntimeError('the student {name} was imported')\n", encoding="utf-8")
+    source = '"""Doc."""\nimport os\n\nX = 1\n'
+    module = package / "mod.py"
+    module.write_text(source, encoding="utf-8")
+    uri = module.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri, language_id="python", version=1, text=source
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in client.diagnostics[uri]}
+    assert FAILURE_CODE not in codes, [d.message for d in client.diagnostics[uri]]
+    assert "E9999" in codes
 
 
 async def test_unsaved_changes_in_a_package_module_are_reported_not_guessed(

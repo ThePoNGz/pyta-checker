@@ -15,12 +15,38 @@ def drop_cwd_from_path(cwd: str | None = None, path: list[str] = sys.path) -> No
     its path. What runpy imports before this runs (types, operator and a few
     more) is only covered by the -c launcher in scripts/bundle.py.
     """
-    target = os.path.normcase(os.path.abspath(os.getcwd() if cwd is None else cwd))
-    for entry in [p for p in path if os.path.normcase(os.path.abspath(p or os.curdir)) == target]:
+    target = _resolved(os.getcwd() if cwd is None else cwd)
+    for entry in [p for p in path if _resolved(p or os.curdir) == target]:
         path.remove(entry)
 
 
+def drop_cwd_from_pythonpath(cwd: str | None = None, environ: dict[str, str] = os.environ) -> None:
+    """Take the start directory out of the PYTHONPATH the runner will inherit.
+
+    Every check runs in a subprocess that takes PYTHONPATH from the environment,
+    not from this process's sys.path, so a project root left in the variable
+    would shadow the standard library in each check while the server itself
+    came up fine. An empty entry means the cwd to Python, so it goes too.
+    """
+    value = environ.get("PYTHONPATH")
+    if value is None:
+        return
+    target = _resolved(os.getcwd() if cwd is None else cwd)
+    kept = [p for p in value.split(os.pathsep) if p and _resolved(p) != target]
+    if kept:
+        environ["PYTHONPATH"] = os.pathsep.join(kept)
+    else:
+        del environ["PYTHONPATH"]
+
+
+def _resolved(path: str) -> str:
+    # A shell reports the logical path and getcwd the physical one, so only a
+    # resolved comparison sees that PYTHONPATH=$PWD is the start directory.
+    return os.path.normcase(os.path.realpath(path))
+
+
 drop_cwd_from_path()
+drop_cwd_from_pythonpath()
 
 import logging  # noqa: E402
 

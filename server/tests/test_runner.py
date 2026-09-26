@@ -434,3 +434,40 @@ def test_an_in_process_check_leaves_no_mypy_cache_in_the_cwd(tmp_path: Path, mon
     assert result["ok"] is True, result["error"]
     assert "E9952" in _codes(result), f"mypy never ran, so nothing is proven: {_codes(result)}"
     assert not (tmp_path / ".mypy_cache").exists(), sorted(p.name for p in tmp_path.iterdir())
+
+
+def test_the_runner_launcher_survives_stdlib_names_in_a_package_directory(tmp_path) -> None:
+    # A package module is checked in place, so the runner starts in the package
+    # directory. With -m that directory is on sys.path before runpy imports
+    # anything, and on 3.10 a student types.py there runs before the runner can
+    # strip it. The launcher the server uses clears the path first.
+    import json
+    import os
+    import subprocess
+    import sys
+
+    from pyta_lsp.paths import module_launcher
+
+    package = tmp_path / "mypkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    for name in ("types.py", "operator.py", "json.py"):
+        (package / name).write_text(f"raise RuntimeError('the student {name} was imported')\n", encoding="utf-8")
+    module = package / "mod.py"
+    module.write_text('"""Doc."""\nimport os\n\nX = 1\n', encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONSAFEPATH"}
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    completed = subprocess.run(
+        [sys.executable, *module_launcher("pyta_lsp.runner"), str(module), "--source-dir", str(package)],
+        cwd=package,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["ok"], result
+    assert "E9999" in {m["msg_id"] for m in result["messages"]}

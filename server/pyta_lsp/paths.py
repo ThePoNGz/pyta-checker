@@ -5,6 +5,25 @@ import getpass
 import os
 import tempfile
 
+# One line, three copies: here, scripts/bundle.py (SERVER_LAUNCHER, for the tarball
+# check) and zed/src/logic.rs (the Zed extension). Tests keep them equal.
+_LAUNCHER = (
+    "import os, sys; here = os.path.normcase(os.path.realpath(os.getcwd())); "
+    "sys.path[:] = [p for p in sys.path if p and os.path.normcase(os.path.realpath(p)) != here]; "
+    "import runpy; runpy.run_module('%s', run_name='__main__', alter_sys=True)"
+)
+
+
+def module_launcher(module: str) -> list[str]:
+    """The arguments that run `python -m module` with the start directory kept off sys.path.
+
+    With -m the start directory is on sys.path before runpy imports anything, so
+    a student types.py there is imported in place of the standard library one on
+    3.10, and on any version without PYTHONSAFEPATH. This clears it first and
+    imports nothing until it has. Arguments after it reach the module as with -m.
+    """
+    return ["-c", _LAUNCHER % module]
+
 
 def _user_tag() -> str:
     """A stable per-user component for paths under the shared temp directory."""

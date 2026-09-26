@@ -223,6 +223,15 @@ def test_the_launcher_survives_stdlib_names_at_the_project_root_on_any_python(tm
         (project / name).write_text(f"raise RuntimeError('the project {name} was imported')\n", encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if k != "PYTHONSAFEPATH"}
     env["PYTHONIOENCODING"] = "utf-8"
+    # The project root on PYTHONPATH too (export PYTHONPATH=$PWD is common course
+    # advice), and through a link, the way a shell reports its directory on macOS.
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(project, target_is_directory=True)
+        via = link
+    except (OSError, NotImplementedError):
+        via = project
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [env.get("PYTHONPATH"), str(via)]))
 
     result = bundle.initialize_round_trip(sys.executable, project, env, args=("-c", bundle.SERVER_LAUNCHER))
 
@@ -252,3 +261,12 @@ def test_check_tarball_end_to_end(tmp_path: Path) -> None:
     bundle = _load()
     target = bundle.write_tarball(tmp_path / "out")
     assert bundle.cmd_check_tarball(target) == 0
+
+
+def test_the_launcher_line_is_the_one_the_server_uses_for_the_runner() -> None:
+    # Three copies of one line: here for check-tarball, in pyta_lsp.paths for the
+    # runner spawn, and in the Zed extension. A cargo test pins the third to this
+    # one, and this pins the second.
+    from pyta_lsp.paths import module_launcher
+
+    assert module_launcher("pyta_lsp") == ["-c", _load().SERVER_LAUNCHER]
