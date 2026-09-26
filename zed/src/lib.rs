@@ -7,10 +7,11 @@ use std::fs;
 use std::path::Path;
 
 use logic::{
-    choose_interpreter, interpreter_candidates, is_bare_name, libs_dir, newest_server_dir,
-    parse_probe, parse_settings, pick_asset, probe_failure, server_dir_name, server_env,
-    stale_server_dirs, workspace_configuration, Candidate, FetchError, Os, ProbeOutcome, Settings,
-    INSTALL_MARKER, NOTICE_VAR, PROBE, PROBE_ARGS, PYENV_DIR_VAR, REPO, SERVER_ARGS, SERVER_ID,
+    choose_interpreter, executable_to_start, interpreter_candidates, is_bare_name, libs_dir,
+    newest_server_dir, parse_probe, parse_settings, pick_asset, probe_env, probe_failure,
+    project_dir, server_dir_name, server_env, stale_server_dirs, workspace_configuration,
+    Candidate, FetchError, Os, ProbeOutcome, Settings, INSTALL_MARKER, NOTICE_VAR, PROBE,
+    PROBE_ARGS, REPO, SERVER_ARGS, SERVER_ID,
 };
 use zed_extension_api::settings::LspSettings;
 use zed_extension_api::{self as zed, LanguageServerId, LanguageServerInstallationStatus, Result};
@@ -32,14 +33,13 @@ fn host_os() -> Os {
     }
 }
 
-/// Runs the probe the way the server will run: with the shell env, and with pyenv
+/// Runs the probe the way the server will run: with the same env, and with pyenv
 /// pointed at the project so a shim resolves the same version in both places.
-fn probe(python: &str, shell_env: &[(String, String)], worktree_root: &str) -> ProbeOutcome {
+fn probe(python: &str, env: &[(String, String)]) -> ProbeOutcome {
     let mut command = zed::process::Command::new(python)
         .args(PROBE_ARGS)
         .arg(PROBE)
-        .envs(shell_env.iter().cloned())
-        .env(PYENV_DIR_VAR, worktree_root);
+        .envs(env.iter().cloned());
     let output = match command.output() {
         Ok(output) => output,
         Err(error) => return ProbeOutcome::Failed(error),
@@ -53,7 +53,7 @@ fn probe(python: &str, shell_env: &[(String, String)], worktree_root: &str) -> P
     match parse_probe(&String::from_utf8_lossy(&output.stdout)) {
         Ok(probed) => ProbeOutcome::Found(
             probed.version,
-            probed.executable.unwrap_or_else(|| python.to_string()),
+            executable_to_start(python, probed.executable.as_deref()),
         ),
         Err(reason) => ProbeOutcome::Failed(reason),
     }
@@ -108,8 +108,9 @@ fn all_server_dirs() -> Vec<String> {
 impl PytaExtension {
     fn find_python(&self, settings: &Settings, worktree: &zed::Worktree) -> Result<String> {
         let root = worktree.root_path();
-        let shell_env = worktree.shell_env();
-        let candidates = interpreter_candidates(settings, &root, host_os());
+        let os = host_os();
+        let env = probe_env(worktree.shell_env(), os, &project_dir(&root));
+        let candidates = interpreter_candidates(settings, &root, os);
         choose_interpreter(&candidates, |candidate| {
             // A bare name is looked up here, because Zed would otherwise treat the
             // command as a path inside the extension directory.
@@ -119,7 +120,7 @@ impl PytaExtension {
                 Candidate::Configured(path) | Candidate::Venv(path) => Some(path.clone()),
             };
             match python {
-                Some(python) => probe(&python, &shell_env, &root),
+                Some(python) => probe(&python, &env),
                 None => ProbeOutcome::Missing,
             }
         })

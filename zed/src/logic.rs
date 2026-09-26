@@ -15,15 +15,16 @@ pub const INSTALL_MARKER: &str = "installed";
 /// server is started with exactly what answered the probe, not a shim or launcher.
 pub const PROBE: &str =
     "import sys; print(sys.version_info[0], sys.version_info[1]); print(sys.executable)";
-/// -E and -s keep the shell PYTHON* variables and the user site out of the probe,
-/// and unlike -I they exist on Python 2, so an old python still reports its version.
-pub const PROBE_ARGS: [&str; 3] = ["-E", "-s", "-c"];
+/// No -E or -I: the probe runs with the same environment the server will get, so
+/// what it reports is what the server sees, and PYTHONUTF8 reaches it, which on
+/// Windows is what keeps a non ASCII sys.executable readable.
+pub const PROBE_ARGS: [&str; 1] = ["-c"];
 /// The server is started with -c rather than -m. With -m the start directory is
 /// on sys.path before runpy imports anything, so on 3.10 a types.py in the project
 /// root would be imported in place of the standard library one. This line takes
 /// the start directory out first and imports nothing until it has. scripts/bundle.py
 /// holds the same line for its own check, and a test keeps the two equal.
-pub const SERVER_LAUNCHER: &str = "import os, sys; here = os.path.normcase(os.getcwd()); sys.path[:] = [p for p in sys.path if p and os.path.normcase(os.path.abspath(p)) != here]; import runpy; runpy.run_module('pyta_lsp', run_name='__main__', alter_sys=True)";
+pub const SERVER_LAUNCHER: &str = "import os, sys; here = os.path.normcase(os.path.realpath(os.getcwd())); sys.path[:] = [p for p in sys.path if p and os.path.normcase(os.path.realpath(p)) != here]; import runpy; runpy.run_module('pyta_lsp', run_name='__main__', alter_sys=True)";
 pub const SERVER_ARGS: [&str; 2] = ["-c", SERVER_LAUNCHER];
 /// The settings section the server asks for with workspace/configuration.
 pub const SERVER_SECTION: &str = "pythonta";
@@ -95,12 +96,55 @@ pub fn join(base: &str, tail: &str, os: Os) -> String {
     format!("{trimmed}{separator}{tail}")
 }
 
+/// The directory a worktree stands for. Zed opens a single file as a worktree
+/// whose root is that file, and pyenv aborts when PYENV_DIR is not a directory.
+pub fn project_dir(worktree_root: &str) -> String {
+    let trimmed = worktree_root.trim_end_matches(['/', '\\']);
+    let Some(index) = trimmed.rfind(['/', '\\']) else {
+        return worktree_root.to_string();
+    };
+    let last = trimmed[index + 1..].to_ascii_lowercase();
+    if !(last.ends_with(".py") || last.ends_with(".pyi") || last.ends_with(".pyw")) {
+        return worktree_root.to_string();
+    }
+    let parent = &trimmed[..index];
+    if parent.is_empty() || parent.ends_with(':') {
+        // A file at the root of the filesystem or of a drive keeps the separator.
+        trimmed[..=index].to_string()
+    } else {
+        parent.to_string()
+    }
+}
+
 pub fn venv_python(worktree_root: &str, os: Os) -> String {
     let relative = match os {
         Os::Windows => ".venv\\Scripts\\python.exe",
         Os::Mac | Os::Linux => ".venv/bin/python",
     };
-    join(worktree_root, relative, os)
+    join(&project_dir(worktree_root), relative, os)
+}
+
+/// A usable path from what the probe printed, else the path that was probed.
+///
+/// On Windows a code page can still garble the line, and an embedded Python can
+/// leave sys.executable empty, and Zed cannot start either of those.
+pub fn executable_to_start(probed_path: &str, reported: Option<&str>) -> String {
+    match reported.map(str::trim) {
+        Some(path) if !path.is_empty() && !path.contains('\u{FFFD}') && is_absolute(path) => {
+            path.to_string()
+        }
+        _ => probed_path.to_string(),
+    }
+}
+
+fn is_absolute(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path.starts_with('/')
+        || path.starts_with("\\\\")
+        || (bytes.len() > 2
+            && bytes[0].is_ascii_alphabetic()
+            && bytes[1] == b':'
+            && (bytes[2] == b'\\' || bytes[2] == b'/'))
 }
 
 pub fn interpreter_candidates(settings: &Settings, worktree_root: &str, os: Os) -> Vec<Candidate> {
@@ -362,16 +406,29 @@ const FORCED: [(&str, &str); 4] = [
 /// Windows env keys are case insensitive but Zed merges by exact string, so a
 /// value goes out under the spelling the shell used, or two keys would race.
 pub fn server_env(base: Vec<(String, String)>, libs: &str, os: Os) -> Vec<(String, String)> {
+    python_env(base, os, Some(libs))
+}
+
+/// The environment the version probe runs in: the same as the server, minus a
+/// PYTHONPATH (the probe imports nothing the project could shadow, and the
+/// bundle is not known yet), plus the project directory for pyenv.
+pub fn probe_env(base: Vec<(String, String)>, os: Os, project_dir: &str) -> Vec<(String, String)> {
+    let mut env = python_env(base, os, None);
+    env.push((PYENV_DIR_VAR.to_string(), project_dir.to_string()));
+    env
+}
+
+fn python_env(base: Vec<(String, String)>, os: Os, libs: Option<&str>) -> Vec<(String, String)> {
     let delimiter = if os == Os::Windows { ';' } else { ':' };
     let mut env: Vec<(String, String)> = Vec::with_capacity(base.len() + 5);
     let mut python_path_key: Option<String> = None;
-    let mut python_path = libs.to_string();
+    let mut python_path = libs.map(str::to_string);
     let mut forced_seen: Vec<&str> = Vec::new();
     for (key, value) in base {
         let upper = key.to_ascii_uppercase();
         if upper == "PYTHONPATH" {
-            if !value.is_empty() {
-                python_path = format!("{libs}{delimiter}{value}");
+            if let (Some(libs), false) = (libs, value.is_empty()) {
+                python_path = Some(format!("{libs}{delimiter}{value}"));
             }
             python_path_key = Some(key);
             continue;
@@ -387,10 +444,12 @@ pub fn server_env(base: Vec<(String, String)>, libs: &str, os: Os) -> Vec<(Strin
         }
         env.push((key, value));
     }
-    env.push((
-        python_path_key.unwrap_or_else(|| "PYTHONPATH".to_string()),
-        python_path,
-    ));
+    if let Some(python_path) = python_path {
+        env.push((
+            python_path_key.unwrap_or_else(|| "PYTHONPATH".to_string()),
+            python_path,
+        ));
+    }
     for (name, forced) in FORCED {
         if !forced_seen.contains(&name) {
             env.push((name.to_string(), forced.to_string()));
@@ -506,6 +565,84 @@ mod tests {
         assert_eq!(old.executable, None);
         assert!(parse_probe("").is_err());
         assert!(parse_probe("Python\n").is_err());
+    }
+
+    #[test]
+    fn a_single_file_worktree_stands_for_its_directory() {
+        assert_eq!(
+            project_dir("/home/me/csc148/a1/tally.py"),
+            "/home/me/csc148/a1"
+        );
+        assert_eq!(
+            project_dir("C:\\Users\\me\\a1\\tally.PY"),
+            "C:\\Users\\me\\a1"
+        );
+        assert_eq!(project_dir("/home/me/csc148/a1"), "/home/me/csc148/a1");
+        assert_eq!(project_dir("/home/me/csc148/a1/"), "/home/me/csc148/a1/");
+        assert_eq!(project_dir("/tally.py"), "/");
+        assert_eq!(project_dir("C:\\tally.py"), "C:\\");
+        assert_eq!(project_dir("tally.py"), "tally.py");
+        assert_eq!(
+            venv_python("/home/me/a1/tally.py", Os::Linux),
+            "/home/me/a1/.venv/bin/python"
+        );
+    }
+
+    #[test]
+    fn the_executable_to_start_falls_back_to_the_probed_path() {
+        assert_eq!(
+            executable_to_start("/usr/bin/python3", Some("/opt/py/bin/python3.12\n")),
+            "/opt/py/bin/python3.12"
+        );
+        assert_eq!(
+            executable_to_start(
+                "C:\\py\\python.exe",
+                Some("C:\\Users\\Jos\u{FFFD}\\python.exe")
+            ),
+            "C:\\py\\python.exe"
+        );
+        assert_eq!(
+            executable_to_start("/usr/bin/python3", Some("")),
+            "/usr/bin/python3"
+        );
+        assert_eq!(
+            executable_to_start("/usr/bin/python3", Some("python3")),
+            "/usr/bin/python3"
+        );
+        assert_eq!(
+            executable_to_start("/usr/bin/python3", None),
+            "/usr/bin/python3"
+        );
+        assert_eq!(
+            executable_to_start("C:\\py\\python.exe", Some("C:/Python312/python.exe")),
+            "C:/Python312/python.exe"
+        );
+        assert_eq!(
+            executable_to_start("C:\\py\\python.exe", Some("\\\\server\\share\\python.exe")),
+            "\\\\server\\share\\python.exe"
+        );
+    }
+
+    #[test]
+    fn the_probe_env_is_the_server_env_without_a_pythonpath() {
+        let base = vec![
+            ("PATH".to_string(), "/usr/bin".to_string()),
+            ("PYTHONPATH".to_string(), "/proj".to_string()),
+            ("PYTHONHOME".to_string(), "/old".to_string()),
+        ];
+        let env = probe_env(base, Os::Linux, "/proj");
+        assert_eq!(
+            pairs(&env),
+            vec![
+                ("PATH", "/usr/bin"),
+                ("PYTHONHOME", ""),
+                ("PYTHONSAFEPATH", "1"),
+                ("PYTHONUTF8", "1"),
+                ("PYTHONIOENCODING", "utf-8"),
+                ("PYTHONUNBUFFERED", "1"),
+                ("PYENV_DIR", "/proj"),
+            ]
+        );
     }
 
     #[test]

@@ -19,4 +19,4 @@ path = ["ThePoNGz", "pyta-checker", "**"]
 [[capabilities]]
 kind = "process:exec"
 command = "*"
-args = ["-E", "-s", "-c", "*"]
+args = ["-c", "*"]
