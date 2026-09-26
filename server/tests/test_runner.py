@@ -475,9 +475,10 @@ def test_the_runner_launcher_survives_stdlib_names_in_a_package_directory(tmp_pa
 
 def test_pythonpath_reaches_the_check_untouched(tmp_path) -> None:
     # A course that says export PYTHONPATH=$PWD gets the same import resolution
-    # in a check as in the students own run: tabulate ships with PythonTA, and a
-    # course package of that name at the root still wins, because PYTHONPATH
-    # comes before site-packages for their python too.
+    # in a check as in the students own run: a package at the root imports from
+    # a subfolder through that PYTHONPATH, which reaches the runner unchanged.
+    # The name is one nothing ships, since the bundle comes first on PYTHONPATH
+    # and a course package named like a bundled one loses to it, in every client.
     import json
     import os
     import subprocess
@@ -486,13 +487,13 @@ def test_pythonpath_reaches_the_check_untouched(tmp_path) -> None:
     from pyta_lsp.paths import module_launcher
 
     project = tmp_path / "project"
-    (project / "tabulate").mkdir(parents=True)
-    (project / "tabulate" / "__init__.py").write_text(
+    (project / "coursepkg").mkdir(parents=True)
+    (project / "coursepkg" / "__init__.py").write_text(
         '"""Course package."""\n\n\ndef course_table() -> int:\n    """Doc."""\n    return 1\n', encoding="utf-8"
     )
     (project / "sub").mkdir()
     target = project / "sub" / "use.py"
-    target.write_text('"""Use."""\nfrom tabulate import course_table\n\nX = course_table()\n', encoding="utf-8")
+    target.write_text('"""Use."""\nfrom coursepkg import course_table\n\nX = course_table()\n', encoding="utf-8")
     staging = tmp_path / "staging"
     staging.mkdir()
     env = {k: v for k, v in os.environ.items() if k != "PYTHONSAFEPATH"}
