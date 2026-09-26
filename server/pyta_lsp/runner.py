@@ -232,6 +232,8 @@ def run_check(
         # of the server pins this, so a check running in process has to pin it too.
         os.environ["MYPY_CACHE_DIR"] = mypy_cache_dir()
         if parent_str not in sys.path:
+            # Last on purpose: a sibling of the checked file must never stand in for
+            # python_ta, pylint or the standard library that this process imports.
             sys.path.append(parent_str)
             inserted_path = True
         with contextlib.redirect_stdout(log), contextlib.redirect_stderr(log):

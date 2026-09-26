@@ -26,6 +26,7 @@ from .diagnostics import (
     split_lines,
     to_diagnostic,
 )
+from .paths import module_launcher
 from .scheduler import GENERATION_KEY, CheckScheduler
 
 log = logging.getLogger("pyta_lsp")
@@ -337,16 +338,19 @@ class PytaLanguageServer(LanguageServer):
                             "checking without it",
                             types.MessageType.Warning,
                         )
-            argv = [sys.executable, "-m", "pyta_lsp.runner", target, "--source-dir", source_dir]
+            # Not -m: for a package module the runner starts in the package
+            # directory, and -m would put it on sys.path before runpy imports
+            # anything, so a student types.py there would run on 3.10.
+            argv = [sys.executable, *module_launcher("pyta_lsp.runner"), target, "--source-dir", source_dir]
             if self.settings.config_path:
                 argv += ["--config", self.settings.config_path]
                 root = select_workspace_root(self.workspace_folders, path)
                 if root:
                     argv += ["--workspace-root", root]
-            # On 3.10 PYTHONSAFEPATH does nothing, so sys.path[0] is whatever the
-            # runner is spawned in. For a staged check that is the staging root, which
-            # holds one subdirectory and nothing importable. For a package module,
-            # which has to stay put, it is the package directory.
+            # The launcher keeps the spawn directory off sys.path, and the staging
+            # root holds one subdirectory and nothing importable anyway. A package
+            # module has to stay put, so its runner starts in the package directory,
+            # where mypy can shorten the paths it reports.
             spawn_dir = staging if staging is not None else os.path.dirname(target)
             result = self.scheduler.run(uri, argv, spawn_dir, generation)
         finally:

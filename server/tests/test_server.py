@@ -1,7 +1,12 @@
+import atexit
 import json
+import os
+import shutil
 import sys
+import tempfile
 import time
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 import pytest
 import pytest_lsp
@@ -38,6 +43,113 @@ async def quiet_client(lsp_client: LanguageClient) -> AsyncGenerator[None, None]
     await lsp_client.shutdown_session()
 
 
+def _launcher() -> str:
+    """The -c line the Zed extension starts the server with, from scripts/bundle.py."""
+    import importlib.util
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "bundle.py"
+    spec = importlib.util.spec_from_file_location("bundle", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module.SERVER_LAUNCHER
+
+
+def _client_started_in_a_shadowing_directory(
+    names: tuple[str, ...] = ("json.py",), root_on_pythonpath: bool = False
+) -> LanguageClient:
+    """A client whose server starts from a directory holding files named after stdlib modules.
+
+    Zed starts language servers at the project root, and nothing stops a
+    student from keeping a file named after a standard library module there.
+    With root_on_pythonpath the same directory also arrives through PYTHONPATH,
+    which the runner subprocess inherits untouched, as it would from the shell.
+    """
+    client = pytest_lsp.make_test_lsp_client()
+    root = Path(tempfile.mkdtemp(prefix="pyta-lsp-shadow-"))
+    atexit.register(shutil.rmtree, root, ignore_errors=True)
+    for name in names:
+        (root / name).write_text(f"raise RuntimeError('the project {name} was imported')\n", encoding="utf-8")
+    start_io = client.start_io
+
+    async def start_io_in_root(cmd: str, *args, **kwargs) -> None:
+        if root_on_pythonpath:
+            env = dict(kwargs.get("env") or os.environ)
+            env["PYTHONPATH"] = os.pathsep.join(filter(None, [env.get("PYTHONPATH"), str(root)]))
+            kwargs["env"] = env
+        await start_io(cmd, *args, cwd=str(root), **kwargs)
+
+    client.start_io = start_io_in_root  # type: ignore[method-assign]
+    client.server_root = root  # type: ignore[attr-defined]
+    return client
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-m", "pyta_lsp"],
+        client_factory=_client_started_in_a_shadowing_directory,
+        server_env={**os.environ, "PYTHONSAFEPATH": "1", "PYTHONUTF8": "1"},
+    )
+)
+async def shadowed_client(lsp_client: LanguageClient) -> AsyncGenerator[None, None]:
+    await lsp_client.initialize_session(
+        types.InitializeParams(
+            capabilities=types.ClientCapabilities(),
+            root_uri=FIXTURES.as_uri(),
+            initialization_options={"runOnOpen": True, "runOnSave": True, "configPath": ""},
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
+
+
+def _client_in_a_root_full_of_stdlib_names() -> LanguageClient:
+    return _client_started_in_a_shadowing_directory(("types.py", "operator.py", "json.py"))
+
+
+def _client_with_the_root_on_pythonpath() -> LanguageClient:
+    return _client_started_in_a_shadowing_directory((), root_on_pythonpath=True)
+
+
+# No PYTHONSAFEPATH here on purpose: the launcher has to hold up without it.
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-c", _launcher()],
+        client_factory=_client_in_a_root_full_of_stdlib_names,
+        server_env={k: v for k, v in os.environ.items() if k != "PYTHONSAFEPATH"} | {"PYTHONUTF8": "1"},
+    )
+)
+async def launched_client(lsp_client: LanguageClient) -> AsyncGenerator[None, None]:
+    await lsp_client.initialize_session(
+        types.InitializeParams(
+            capabilities=types.ClientCapabilities(),
+            root_uri=FIXTURES.as_uri(),
+            initialization_options={"runOnOpen": True, "runOnSave": True, "configPath": ""},
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-c", _launcher()],
+        client_factory=_client_with_the_root_on_pythonpath,
+        server_env={**os.environ, "PYTHONSAFEPATH": "1", "PYTHONUTF8": "1"},
+    )
+)
+async def pythonpath_client(lsp_client: LanguageClient) -> AsyncGenerator[None, None]:
+    await lsp_client.initialize_session(
+        types.InitializeParams(
+            capabilities=types.ClientCapabilities(),
+            root_uri=FIXTURES.as_uri(),
+            initialization_options={"runOnOpen": True, "runOnSave": True, "configPath": ""},
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
+
+
 def _open(client: LanguageClient, name: str) -> str:
     path = FIXTURES / name
     uri = path.as_uri()
@@ -64,6 +176,78 @@ async def test_open_publishes_diagnostics_honoring_embedded_config(client: Langu
     assert pep8.range.end == types.Position(line=11, character=len("    total=0"))
     assert pep8.code_description is not None
     assert pep8.code_description.href.endswith("#e9989")
+
+
+async def test_the_server_checks_from_a_project_root_that_shadows_the_stdlib(
+    shadowed_client: LanguageClient,
+) -> None:
+    # The VS Code client starts the server inside the extension folder. Zed starts
+    # it at the project root, so nothing here may depend on the old cwd, and a
+    # json.py at that root must not be the json the server or the runner imports.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    root = shadowed_client.server_root  # type: ignore[attr-defined]
+    assert (root / "json.py").is_file()
+
+    uri = _open(shadowed_client, "course_style.py")
+    await shadowed_client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in shadowed_client.diagnostics[uri]}
+    assert FAILURE_CODE not in codes, [d.message for d in shadowed_client.diagnostics[uri]]
+    assert "E9989" in codes
+
+
+async def test_the_launcher_checks_from_a_root_full_of_stdlib_names(
+    launched_client: LanguageClient,
+) -> None:
+    # The Zed extension starts the server with the -c launcher in the project root.
+    # types.py and operator.py are imported by runpy before __main__ could strip
+    # anything, so only a launcher that clears the path first survives them.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    root = launched_client.server_root  # type: ignore[attr-defined]
+    assert (root / "types.py").is_file()
+
+    uri = _open(launched_client, "course_style.py")
+    await launched_client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in launched_client.diagnostics[uri]}
+    assert FAILURE_CODE not in codes, [d.message for d in launched_client.diagnostics[uri]]
+    assert "E9989" in codes
+
+
+async def test_pythonpath_is_passed_through_to_the_check_untouched(
+    pythonpath_client: LanguageClient,
+) -> None:
+    # export PYTHONPATH=$PWD is common course advice, so a file in a subfolder
+    # imports a package at the root through it. The server passes PYTHONPATH on
+    # to the runner exactly as the students own python would see it.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    launched_client = pythonpath_client
+    root = launched_client.server_root  # type: ignore[attr-defined]
+    (root / "mypkg").mkdir()
+    (root / "mypkg" / "__init__.py").write_text(
+        '"""Pkg."""\n\n\ndef f() -> int:\n    """Doc."""\n    return 1\n', encoding="utf-8"
+    )
+    (root / "sub").mkdir()
+    source = '"""Use."""\nfrom mypkg import f\n\nX = f()\n'
+    target = root / "sub" / "use.py"
+    target.write_text(source, encoding="utf-8")
+    uri = target.as_uri()
+
+    launched_client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri, language_id="python", version=1, text=source
+            )
+        )
+    )
+    await launched_client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in launched_client.diagnostics[uri]}
+    assert FAILURE_CODE not in codes, [d.message for d in launched_client.diagnostics[uri]]
+    assert "E0401" not in codes, codes
 
 
 async def test_close_clears_diagnostics(client: LanguageClient) -> None:
@@ -269,6 +453,37 @@ async def test_a_package_module_is_not_given_false_import_errors(
     await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
 
     assert "E0611" not in {d.code for d in client.diagnostics[uri]}
+
+
+async def test_a_package_module_beside_stdlib_names_is_still_checked(
+    client: LanguageClient, tmp_path
+) -> None:
+    # The runner for a package module starts in the package directory. A student
+    # types.py there must not be what the runner imports, on any Python.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    package = tmp_path / "mypkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    for name in ("types.py", "operator.py", "json.py"):
+        (package / name).write_text(f"raise RuntimeError('the student {name} was imported')\n", encoding="utf-8")
+    source = '"""Doc."""\nimport os\n\nX = 1\n'
+    module = package / "mod.py"
+    module.write_text(source, encoding="utf-8")
+    uri = module.as_uri()
+
+    client.text_document_did_open(
+        types.DidOpenTextDocumentParams(
+            text_document=types.TextDocumentItem(
+                uri=uri, language_id="python", version=1, text=source
+            )
+        )
+    )
+    await client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in client.diagnostics[uri]}
+    assert FAILURE_CODE not in codes, [d.message for d in client.diagnostics[uri]]
+    assert "E9999" in codes
 
 
 async def test_unsaved_changes_in_a_package_module_are_reported_not_guessed(

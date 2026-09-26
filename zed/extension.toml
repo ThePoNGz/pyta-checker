@@ -1,0 +1,22 @@
+id = "pyta-lsp"
+name = "PythonTA"
+version = "0.1.0"
+schema_version = 1
+authors = ["ThePong"]
+description = "PythonTA diagnostics for University of Toronto course files, using the check_all(config=...) block the grader uses."
+repository = "https://github.com/ThePoNGz/pyta-checker"
+
+[language_servers.pyta-lsp]
+name = "PythonTA"
+languages = ["Python"]
+
+[[capabilities]]
+kind = "download_file"
+host = "github.com"
+path = ["ThePoNGz", "pyta-checker", "**"]
+
+# The only command the extension runs is the version probe of whichever Python it picked.
+[[capabilities]]
+kind = "process:exec"
+command = "*"
+args = ["-c", "*"]

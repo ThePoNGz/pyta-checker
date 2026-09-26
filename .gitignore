@@ -15,6 +15,9 @@ out/
 .vscode-test/
 # Bundle output (built by scripts/bundle.py)
 bundled/libs/
+# Rust and the Zed dev extension build
+zed/target/
+zed/extension.wasm
 # Editors / OS
 .DS_Store
 Thumbs.db

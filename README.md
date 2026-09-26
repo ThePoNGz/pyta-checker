@@ -48,7 +48,42 @@ If you uninstall the extension while Only PythonTA is on, Pylance problems stay 
 
 ## Other editors
 
-I don't use VS Code anymore, I use Zed, so the next step is a Zed extension. Other editors after that. The checker is a standalone language server (`python -m pyta_lsp` over stdio), so any editor that speaks LSP can use it already. If you want a specific editor, open a GitHub issue.
+### Zed
+
+The Zed extension lives in [`zed/`](zed/). It is not in the Zed extension registry yet, so install it as a dev extension:
+
+1. Install [Rust via rustup](https://rustup.rs), which Zed needs to compile a dev extension.
+2. Clone this repository.
+3. In Zed, open the Extensions page, click **Install Dev Extension**, and pick the `zed/` folder of the checkout.
+4. Open a Python file. The extension downloads PythonTA and the checker from the latest GitHub release on first use, and finds a Python 3.10+ on its own. Until a release newer than v0.1.0 exists, build the server with `python scripts/bundle.py build` instead and point `lsp.pyta-lsp.settings.serverDir` at the checkout's `bundled/libs`. To use a specific Python, set:
+
+```json
+{
+  "lsp": {
+    "pyta-lsp": {
+      "settings": { "interpreter": "/path/to/python" }
+    }
+  }
+}
+```
+
+Zed runs every Python language server you have, so for Only PythonTA add:
+
+```json
+{
+  "languages": {
+    "Python": {
+      "language_servers": ["pyta-lsp"]
+    }
+  }
+}
+```
+
+[`zed/README.md`](zed/README.md) covers the other settings and where to find the log.
+
+### Anything else
+
+The checker is a standalone language server speaking LSP over stdio, so any editor that speaks LSP can use it. Releases after v0.1.0 attach `pyta-lsp-server-<version>.tar.gz`: extract it, put its `libs` directory on `PYTHONPATH`, and start it with Python 3.10 or newer as `python -c` with the `SERVER_LAUNCHER` line in `scripts/bundle.py`, which is what the Zed extension does. In a JSON editor config the line has to be escaped as a JSON string, with each backslash doubled and each `"` written as `\"`; the constant in `zed/src/logic.rs` is exactly that form. Started that way the server is safe from any directory. It guards only against what the launch itself adds: `PYTHONPATH` reaches the checks unchanged, so a check resolves imports exactly as the student's own `python` would, for better or worse. `python -m pyta_lsp` also works, but only from a directory holding no student files and with a `PYTHONPATH` holding nothing but `libs`. Until then, `python scripts/bundle.py build` in a checkout produces the same `libs` directory as `bundled/libs`. If you want a specific editor supported, open a GitHub issue.
 
 ## Troubleshooting
 

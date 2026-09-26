@@ -53,6 +53,10 @@ jobs:
           python-version: '3.10'
       - name: Build bundled libs
         run: python scripts/bundle.py build
+      - name: Server tarball starts from an unrelated directory
+        run: |
+          python scripts/bundle.py tarball dist
+          python scripts/bundle.py check-tarball dist/pyta-lsp-server-*.tar.gz
       - name: Python tests against the bundle only (no python-ta installed)
         run: |
           python -m venv .venv-bare
@@ -72,6 +76,10 @@ jobs:
           python-version: '3.14'
       - name: Build bundled libs
         run: python scripts/bundle.py build
+      - name: Server tarball starts from an unrelated directory
+        run: |
+          python scripts/bundle.py tarball dist
+          python scripts/bundle.py check-tarball dist/pyta-lsp-server-*.tar.gz
       - name: Python tests against the bundle only (no python-ta installed)
         run: |
           python -m venv .venv-bare
@@ -99,6 +107,11 @@ jobs:
       - run: npm ci
       - name: Build bundled libs
         run: python scripts/bundle.py build
+      - name: Server tarball starts from an unrelated directory
+        shell: bash
+        run: |
+          python scripts/bundle.py tarball dist
+          python scripts/bundle.py check-tarball dist/pyta-lsp-server-*.tar.gz
       - name: Python tests against the bundle only (no python-ta installed)
         if: runner.os == 'Linux'
         run: |
@@ -122,3 +135,27 @@ jobs:
         with:
           name: pyta-checker-vsix
           path: pyta-checker.vsix
+
+  zed:
+    name: zed extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustup target add wasm32-wasip2
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            zed/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('zed/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - run: cargo fmt --manifest-path zed/Cargo.toml --check
+      - run: cargo clippy --manifest-path zed/Cargo.toml --all-targets -- -D warnings
+      - run: cargo test --manifest-path zed/Cargo.toml
+      - run: cargo build --manifest-path zed/Cargo.toml --release --target wasm32-wasip2
