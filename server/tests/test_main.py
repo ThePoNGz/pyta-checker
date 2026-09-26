@@ -116,42 +116,22 @@ def test_main_logs_a_notice_from_the_editor(monkeypatch, caplog) -> None:
     assert notices and notices[0].levelno == logging.WARNING
 
 
-def test_demote_cwd_in_pythonpath_moves_the_start_directory_behind_the_stdlib(tmp_path, monkeypatch) -> None:
-    # The runner subprocess takes PYTHONPATH from the environment, not from this
-    # process's sys.path, so a project root there would shadow the stdlib in
-    # every check even though the server itself came up fine. It cannot just go,
-    # though: a course that says export PYTHONPATH=$PWD relies on it for
-    # imports of packages at the root, so the runner puts it back last.
-    from pyta_lsp.__main__ import DEMOTED_VAR, demote_cwd_in_pythonpath
+def test_the_environment_is_passed_through_untouched(tmp_path, monkeypatch) -> None:
+    # The runner gets the same PYTHONPATH the students own python would, project
+    # root included, so a check resolves imports exactly as their run does. The
+    # server only guards its own sys.path against the directory it starts in.
+    import importlib
 
-    libs = str(tmp_path / "libs")
-    environ = {"PYTHONPATH": os.pathsep.join([libs, str(tmp_path), "", "."]), "HOME": "/h"}
+    from pyta_lsp import __main__ as entry
+
+    value = os.pathsep.join([str(tmp_path / "libs"), str(tmp_path), ""])
+    monkeypatch.setenv("PYTHONPATH", value)
     monkeypatch.chdir(tmp_path)
 
-    demote_cwd_in_pythonpath(str(tmp_path), environ)
+    importlib.reload(entry)
 
-    assert environ == {"PYTHONPATH": libs, "HOME": "/h", DEMOTED_VAR: str(tmp_path.resolve())}
-
-
-def test_demote_cwd_in_pythonpath_removes_an_emptied_variable(tmp_path) -> None:
-    from pyta_lsp.__main__ import DEMOTED_VAR, demote_cwd_in_pythonpath
-
-    environ = {"PYTHONPATH": str(tmp_path)}
-    demote_cwd_in_pythonpath(str(tmp_path), environ)
-    assert environ == {DEMOTED_VAR: str(tmp_path.resolve())}
-
-    untouched: dict[str, str] = {}
-    demote_cwd_in_pythonpath(str(tmp_path), untouched)
-    assert untouched == {}
-
-    elsewhere = {"PYTHONPATH": "/elsewhere"}
-    demote_cwd_in_pythonpath(str(tmp_path), elsewhere)
-    assert elsewhere == {"PYTHONPATH": "/elsewhere"}
-
-    # Python ignores an empty PYTHONPATH, so it does not mean the cwd.
-    empty = {"PYTHONPATH": ""}
-    demote_cwd_in_pythonpath(str(tmp_path), empty)
-    assert empty == {"PYTHONPATH": ""}
+    assert os.environ["PYTHONPATH"] == value
+    assert not hasattr(entry, "demote_cwd_in_pythonpath")
 
 
 def test_resolved_falls_back_when_realpath_raises(tmp_path, monkeypatch) -> None:
@@ -171,7 +151,7 @@ def test_drop_cwd_from_path_sees_through_a_symlink(tmp_path, monkeypatch) -> Non
     # one, so comparing without resolving would keep the project on the path.
     import sys
 
-    from pyta_lsp.__main__ import DEMOTED_VAR, demote_cwd_in_pythonpath, drop_cwd_from_path
+    from pyta_lsp.__main__ import drop_cwd_from_path
 
     real = tmp_path / "real"
     real.mkdir()
@@ -183,7 +163,3 @@ def test_drop_cwd_from_path_sees_through_a_symlink(tmp_path, monkeypatch) -> Non
     path = [str(link), "/elsewhere"]
     drop_cwd_from_path(str(real), path)
     assert path == ["/elsewhere"]
-
-    environ = {"PYTHONPATH": str(link)}
-    demote_cwd_in_pythonpath(str(real), environ)
-    assert environ == {DEMOTED_VAR: str(real.resolve())}

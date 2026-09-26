@@ -473,39 +473,17 @@ def test_the_runner_launcher_survives_stdlib_names_in_a_package_directory(tmp_pa
     assert "E9999" in {m["msg_id"] for m in result["messages"]}
 
 
-def test_demoted_paths_go_after_the_stdlib_but_before_site_packages() -> None:
-    # The students own run puts the project root ahead of everything, so a course
-    # package named like an installed one must still win over site-packages. It
-    # only loses to the bundle and the standard library, which it must not shadow.
-    from pyta_lsp.runner import ENV_DEMOTED, insert_demoted_paths
-
-    path = ["/libs", "/py/lib/python3.12", "/py/lib/python3.12/lib-dynload", "/py/lib/python3.12/site-packages", "/extra"]
-    insert_demoted_paths({ENV_DEMOTED: "/proj"}, path)
-    assert path == ["/libs", "/py/lib/python3.12", "/py/lib/python3.12/lib-dynload", "/proj", "/py/lib/python3.12/site-packages", "/extra"]
-
-    no_site = ["/libs", "/py/lib/python3.12"]
-    insert_demoted_paths({ENV_DEMOTED: "/proj"}, no_site)
-    assert no_site == ["/libs", "/py/lib/python3.12", "/proj"]
-
-    already = ["/libs", "/proj", "/py/lib/python3.12/site-packages"]
-    insert_demoted_paths({ENV_DEMOTED: "/proj"}, already)
-    assert already == ["/libs", "/proj", "/py/lib/python3.12/site-packages"]
-
-    untouched = ["/libs"]
-    insert_demoted_paths({}, untouched)
-    assert untouched == ["/libs"]
-
-
-def test_a_course_package_named_like_an_installed_one_wins_over_site_packages(tmp_path) -> None:
-    # tabulate ships with PythonTA, so a course package of that name at the root
-    # has to be the one the check resolves, as it is in the students own run.
+def test_pythonpath_reaches_the_check_untouched(tmp_path) -> None:
+    # A course that says export PYTHONPATH=$PWD gets the same import resolution
+    # in a check as in the students own run: tabulate ships with PythonTA, and a
+    # course package of that name at the root still wins, because PYTHONPATH
+    # comes before site-packages for their python too.
     import json
     import os
     import subprocess
     import sys
 
     from pyta_lsp.paths import module_launcher
-    from pyta_lsp.runner import ENV_DEMOTED
 
     project = tmp_path / "project"
     (project / "tabulate").mkdir(parents=True)
@@ -518,7 +496,7 @@ def test_a_course_package_named_like_an_installed_one_wins_over_site_packages(tm
     staging = tmp_path / "staging"
     staging.mkdir()
     env = {k: v for k, v in os.environ.items() if k != "PYTHONSAFEPATH"}
-    env[ENV_DEMOTED] = str(project)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [env.get("PYTHONPATH"), str(project)]))
 
     completed = subprocess.run(
         [sys.executable, *module_launcher("pyta_lsp.runner"), str(target), "--source-dir", str(target.parent)],
@@ -534,82 +512,3 @@ def test_a_course_package_named_like_an_installed_one_wins_over_site_packages(tm
     assert result["ok"], result
     codes = {m["msg_id"] for m in result["messages"]}
     assert not codes & {"E0401", "E0611"}, codes
-
-
-def test_the_checked_files_own_folder_wins_over_the_demoted_root(tmp_path) -> None:
-    # In the students own run the script folder comes before PYTHONPATH, so a
-    # helpers.py beside the file beats a helpers.py at the project root.
-    import json
-    import os
-    import subprocess
-    import sys
-
-    from pyta_lsp.paths import module_launcher
-    from pyta_lsp.runner import ENV_DEMOTED
-
-    root = tmp_path / "root"
-    (root / "sub").mkdir(parents=True)
-    (root / "helpers.py").write_text('"""Root."""\n\n\ndef b(x: int) -> int:\n    """Doc."""\n    return x\n', encoding="utf-8")
-    (root / "sub" / "helpers.py").write_text('"""Sub."""\n\n\ndef b() -> int:\n    """Doc."""\n    return 1\n', encoding="utf-8")
-    target = root / "sub" / "use.py"
-    target.write_text('"""Use."""\nimport helpers\n\nX = helpers.b()\n', encoding="utf-8")
-    staging = tmp_path / "staging"
-    staging.mkdir()
-    env = {k: v for k, v in os.environ.items() if k != "PYTHONSAFEPATH"}
-    env[ENV_DEMOTED] = str(root)
-
-    completed = subprocess.run(
-        [sys.executable, *module_launcher("pyta_lsp.runner"), str(target), "--source-dir", str(target.parent)],
-        cwd=staging,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    result = json.loads(completed.stdout)
-    assert result["ok"], result
-    codes = {m["msg_id"] for m in result["messages"]}
-    assert "E1120" not in codes, codes
-
-
-def test_demoted_paths_still_resolve_project_imports_but_after_the_stdlib(tmp_path) -> None:
-    # The server takes the project root out of the PYTHONPATH the runner inherits
-    # and hands it over separately, so a package at the root still imports the
-    # way the course's own run would, while a types.py at the root loses to the
-    # standard library.
-    import json
-    import os
-    import subprocess
-    import sys
-
-    from pyta_lsp.paths import module_launcher
-    from pyta_lsp.runner import ENV_DEMOTED
-
-    project = tmp_path / "project"
-    (project / "mypkg").mkdir(parents=True)
-    (project / "mypkg" / "__init__.py").write_text('"""Pkg."""\n\n\ndef f() -> int:\n    """Doc."""\n    return 1\n', encoding="utf-8")
-    (project / "types.py").write_text("raise RuntimeError('the project types.py was imported')\n", encoding="utf-8")
-    (project / "sub").mkdir()
-    target = project / "sub" / "use.py"
-    target.write_text('"""Use."""\nfrom mypkg import f\n\nX = f()\n', encoding="utf-8")
-    staging = tmp_path / "staging"
-    staging.mkdir()
-    env = {k: v for k, v in os.environ.items() if k != "PYTHONSAFEPATH"}
-    env[ENV_DEMOTED] = str(project)
-
-    completed = subprocess.run(
-        [sys.executable, *module_launcher("pyta_lsp.runner"), str(target), "--source-dir", str(target.parent)],
-        cwd=staging,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    result = json.loads(completed.stdout)
-    assert result["ok"], result
-    codes = {m["msg_id"] for m in result["messages"]}
-    assert "E0401" not in codes, codes

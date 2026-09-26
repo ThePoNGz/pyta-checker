@@ -63,7 +63,7 @@ def _client_started_in_a_shadowing_directory(
     Zed starts language servers at the project root, and nothing stops a
     student from keeping a file named after a standard library module there.
     With root_on_pythonpath the same directory also arrives through PYTHONPATH,
-    which the runner subprocess inherits.
+    which the runner subprocess inherits untouched, as it would from the shell.
     """
     client = pytest_lsp.make_test_lsp_client()
     root = Path(tempfile.mkdtemp(prefix="pyta-lsp-shadow-"))
@@ -104,9 +104,11 @@ async def shadowed_client(lsp_client: LanguageClient) -> AsyncGenerator[None, No
 
 
 def _client_in_a_root_full_of_stdlib_names() -> LanguageClient:
-    return _client_started_in_a_shadowing_directory(
-        ("types.py", "operator.py", "json.py"), root_on_pythonpath=True
-    )
+    return _client_started_in_a_shadowing_directory(("types.py", "operator.py", "json.py"))
+
+
+def _client_with_the_root_on_pythonpath() -> LanguageClient:
+    return _client_started_in_a_shadowing_directory((), root_on_pythonpath=True)
 
 
 # No PYTHONSAFEPATH here on purpose: the launcher has to hold up without it.
@@ -118,6 +120,25 @@ def _client_in_a_root_full_of_stdlib_names() -> LanguageClient:
     )
 )
 async def launched_client(lsp_client: LanguageClient) -> AsyncGenerator[None, None]:
+    await lsp_client.initialize_session(
+        types.InitializeParams(
+            capabilities=types.ClientCapabilities(),
+            root_uri=FIXTURES.as_uri(),
+            initialization_options={"runOnOpen": True, "runOnSave": True, "configPath": ""},
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
+
+
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-c", _launcher()],
+        client_factory=_client_with_the_root_on_pythonpath,
+        server_env={**os.environ, "PYTHONSAFEPATH": "1", "PYTHONUTF8": "1"},
+    )
+)
+async def pythonpath_client(lsp_client: LanguageClient) -> AsyncGenerator[None, None]:
     await lsp_client.initialize_session(
         types.InitializeParams(
             capabilities=types.ClientCapabilities(),
@@ -181,9 +202,7 @@ async def test_the_launcher_checks_from_a_root_full_of_stdlib_names(
 ) -> None:
     # The Zed extension starts the server with the -c launcher in the project root.
     # types.py and operator.py are imported by runpy before __main__ could strip
-    # anything, so only a launcher that clears the path first survives them. The
-    # root is on PYTHONPATH as well, and the check has to come back clean, so the
-    # runner subprocess must not inherit it.
+    # anything, so only a launcher that clears the path first survives them.
     from pyta_lsp.diagnostics import FAILURE_CODE
 
     root = launched_client.server_root  # type: ignore[attr-defined]
@@ -197,14 +216,15 @@ async def test_the_launcher_checks_from_a_root_full_of_stdlib_names(
     assert "E9989" in codes
 
 
-async def test_a_root_package_still_imports_when_the_root_came_through_pythonpath(
-    launched_client: LanguageClient,
+async def test_pythonpath_is_passed_through_to_the_check_untouched(
+    pythonpath_client: LanguageClient,
 ) -> None:
     # export PYTHONPATH=$PWD is common course advice, so a file in a subfolder
-    # imports a package at the root through it. The server moves that root
-    # behind the standard library for the runner, it must not throw it away.
+    # imports a package at the root through it. The server passes PYTHONPATH on
+    # to the runner exactly as the students own python would see it.
     from pyta_lsp.diagnostics import FAILURE_CODE
 
+    launched_client = pythonpath_client
     root = launched_client.server_root  # type: ignore[attr-defined]
     (root / "mypkg").mkdir()
     (root / "mypkg" / "__init__.py").write_text(
