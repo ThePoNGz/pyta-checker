@@ -53,7 +53,7 @@ fn probe(python: &str, env: &[(String, String)]) -> ProbeOutcome {
     match parse_probe(&String::from_utf8_lossy(&output.stdout)) {
         Ok(probed) => ProbeOutcome::Found(
             probed.version,
-            executable_to_start(python, probed.executable.as_deref()),
+            executable_to_start(python, probed.executable.as_deref(), host_os()),
         ),
         Err(reason) => ProbeOutcome::Failed(reason),
     }
@@ -109,8 +109,12 @@ impl PytaExtension {
     fn find_python(&self, settings: &Settings, worktree: &zed::Worktree) -> Result<String> {
         let root = worktree.root_path();
         let os = host_os();
-        let env = probe_env(worktree.shell_env(), os, &project_dir(&root));
-        let candidates = interpreter_candidates(settings, &root, os);
+        // Reading the root entry itself succeeds for a single file worktree and
+        // fails for a directory, which is how Zed tells us which one this is.
+        let root_is_file = worktree.read_text_file("").is_ok();
+        let project = project_dir(&root, root_is_file);
+        let env = probe_env(worktree.shell_env(), os, &project);
+        let candidates = interpreter_candidates(settings, &project, os);
         choose_interpreter(&candidates, |candidate| {
             // A bare name is looked up here, because Zed would otherwise treat the
             // command as a path inside the extension directory.
@@ -128,7 +132,8 @@ impl PytaExtension {
 
     fn server_libs(&mut self, id: &LanguageServerId, settings: &Settings) -> Result<String> {
         if let Some(dir) = &settings.server_dir {
-            self.notice = None;
+            // The notice is about the downloaded server, which stays cached and
+            // may be used again once serverDir is removed, so it is kept.
             return Ok(dir.clone());
         }
         let work_dir = work_dir()?;
@@ -270,7 +275,7 @@ impl zed::Extension for PytaExtension {
         let python = self.find_python(&settings, worktree)?;
         let libs = self.server_libs(id, &settings)?;
         let mut env = server_env(worktree.shell_env(), &libs, host_os());
-        if let Some(notice) = &self.notice {
+        if let (Some(notice), None) = (&self.notice, &settings.server_dir) {
             env.push((NOTICE_VAR.to_string(), notice.clone()));
         }
         Ok(zed::Command {

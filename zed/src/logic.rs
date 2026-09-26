@@ -11,10 +11,12 @@ pub const SERVER_PREFIX: &str = "pyta-lsp-server-";
 /// Written into a server directory once its download was checked, so a directory
 /// Zed was killed in the middle of unpacking is never taken for a finished one.
 pub const INSTALL_MARKER: &str = "installed";
-/// Prints the version on one line and the real executable on the next, so the
-/// server is started with exactly what answered the probe, not a shim or launcher.
-pub const PROBE: &str =
-    "import sys; print(sys.version_info[0], sys.version_info[1]); print(sys.executable)";
+/// Prints the version and the real executable on tagged lines, so the server is
+/// started with exactly what answered the probe, not a shim or launcher, and a
+/// line a sitecustomize or a .pth file printed first is not read as either.
+pub const PROBE: &str = "import sys; print('pyta-probe', sys.version_info[0], sys.version_info[1]); print('pyta-exe', sys.executable)";
+const VERSION_TAG: &str = "pyta-probe";
+const EXECUTABLE_TAG: &str = "pyta-exe";
 /// No -E or -I: the probe runs with the same environment the server will get, so
 /// what it reports is what the server sees, and PYTHONUTF8 reaches it, which on
 /// Windows is what keeps a non ASCII sys.executable readable.
@@ -98,15 +100,16 @@ pub fn join(base: &str, tail: &str, os: Os) -> String {
 
 /// The directory a worktree stands for. Zed opens a single file as a worktree
 /// whose root is that file, and pyenv aborts when PYENV_DIR is not a directory.
-pub fn project_dir(worktree_root: &str) -> String {
+/// Whether the root is a file comes from Zed, since a name proves nothing: a
+/// directory can be called discord.py and a script can have no suffix at all.
+pub fn project_dir(worktree_root: &str, root_is_file: bool) -> String {
+    if !root_is_file {
+        return worktree_root.to_string();
+    }
     let trimmed = worktree_root.trim_end_matches(['/', '\\']);
     let Some(index) = trimmed.rfind(['/', '\\']) else {
         return worktree_root.to_string();
     };
-    let last = trimmed[index + 1..].to_ascii_lowercase();
-    if !(last.ends_with(".py") || last.ends_with(".pyi") || last.ends_with(".pyw")) {
-        return worktree_root.to_string();
-    }
     let parent = &trimmed[..index];
     if parent.is_empty() || parent.ends_with(':') {
         // A file at the root of the filesystem or of a drive keeps the separator.
@@ -116,38 +119,43 @@ pub fn project_dir(worktree_root: &str) -> String {
     }
 }
 
-pub fn venv_python(worktree_root: &str, os: Os) -> String {
+pub fn venv_python(project_dir: &str, os: Os) -> String {
     let relative = match os {
         Os::Windows => ".venv\\Scripts\\python.exe",
         Os::Mac | Os::Linux => ".venv/bin/python",
     };
-    join(&project_dir(worktree_root), relative, os)
+    join(project_dir, relative, os)
 }
 
 /// A usable path from what the probe printed, else the path that was probed.
 ///
-/// On Windows a code page can still garble the line, and an embedded Python can
-/// leave sys.executable empty, and Zed cannot start either of those.
-pub fn executable_to_start(probed_path: &str, reported: Option<&str>) -> String {
+/// On Windows a code page can still garble the line, an embedded Python can leave
+/// sys.executable empty, and an MSYS2 Python reports a POSIX path Windows cannot
+/// start. Zed can run none of those.
+pub fn executable_to_start(probed_path: &str, reported: Option<&str>, os: Os) -> String {
     match reported.map(str::trim) {
-        Some(path) if !path.is_empty() && !path.contains('\u{FFFD}') && is_absolute(path) => {
+        Some(path) if !path.is_empty() && !path.contains('\u{FFFD}') && is_absolute(path, os) => {
             path.to_string()
         }
         _ => probed_path.to_string(),
     }
 }
 
-fn is_absolute(path: &str) -> bool {
+fn is_absolute(path: &str, os: Os) -> bool {
     let bytes = path.as_bytes();
-    path.starts_with('/')
-        || path.starts_with("\\\\")
-        || (bytes.len() > 2
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && (bytes[2] == b'\\' || bytes[2] == b'/'))
+    match os {
+        Os::Windows => {
+            path.starts_with("\\\\")
+                || (bytes.len() > 2
+                    && bytes[0].is_ascii_alphabetic()
+                    && bytes[1] == b':'
+                    && (bytes[2] == b'\\' || bytes[2] == b'/'))
+        }
+        Os::Mac | Os::Linux => path.starts_with('/'),
+    }
 }
 
-pub fn interpreter_candidates(settings: &Settings, worktree_root: &str, os: Os) -> Vec<Candidate> {
+pub fn interpreter_candidates(settings: &Settings, project_dir: &str, os: Os) -> Vec<Candidate> {
     if let Some(configured) = &settings.interpreter {
         return vec![Candidate::Configured(configured.clone())];
     }
@@ -157,7 +165,7 @@ pub fn interpreter_candidates(settings: &Settings, worktree_root: &str, os: Os) 
         Os::Windows => &["python", "python3", "py"],
         Os::Mac | Os::Linux => &["python3", "python"],
     };
-    let mut candidates = vec![Candidate::Venv(venv_python(worktree_root, os))];
+    let mut candidates = vec![Candidate::Venv(venv_python(project_dir, os))];
     candidates.extend(names.iter().map(|name| Candidate::OnPath(name.to_string())));
     candidates
 }
@@ -175,16 +183,22 @@ pub struct Probed {
     pub executable: Option<String>,
 }
 
-/// Reads the two numbers on the first line the probe prints, and the executable on
-/// the second. Python 2 prints the numbers as a tuple, so on that line anything
-/// that isnt a digit is a separator.
-pub fn parse_probe(stdout: &str) -> Result<Probed, String> {
-    let mut lines = stdout
+fn tagged_line<'a>(stdout: &'a str, tag: &str) -> Option<&'a str> {
+    stdout
         .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty());
-    let first = lines.next().unwrap_or("");
-    let numbers: Vec<u32> = first
+        .find_map(|line| line.find(tag).map(|at| &line[at + tag.len()..]))
+}
+
+/// Reads the version and the executable off their tagged lines. Python 2 prints
+/// each line as a tuple, so on the version line anything that isnt a digit is a
+/// separator, and the executable line is stripped of that punctuation too.
+pub fn parse_probe(stdout: &str) -> Result<Probed, String> {
+    let Some(version_line) = tagged_line(stdout, VERSION_TAG) else {
+        return Err(format!(
+            "the version probe printed {stdout:?} instead of a version"
+        ));
+    };
+    let numbers: Vec<u32> = version_line
         .split(|c: char| !c.is_ascii_digit())
         .filter(|part| !part.is_empty())
         .filter_map(|part| part.parse().ok())
@@ -200,9 +214,16 @@ pub fn parse_probe(stdout: &str) -> Result<Probed, String> {
             ))
         }
     };
+    let executable = tagged_line(stdout, EXECUTABLE_TAG)
+        .map(|rest| {
+            rest.trim()
+                .trim_matches(|c: char| c == '\'' || c == ',' || c == ')' || c == ' ')
+                .to_string()
+        })
+        .filter(|path| !path.is_empty());
     Ok(Probed {
         version,
-        executable: lines.next().map(str::to_string),
+        executable,
     })
 }
 
@@ -409,9 +430,9 @@ pub fn server_env(base: Vec<(String, String)>, libs: &str, os: Os) -> Vec<(Strin
     python_env(base, os, Some(libs))
 }
 
-/// The environment the version probe runs in: the same as the server, minus a
-/// PYTHONPATH (the probe imports nothing the project could shadow, and the
-/// bundle is not known yet), plus the project directory for pyenv.
+/// The environment the version probe runs in: the same as the server, without a
+/// PYTHONPATH of ours (the bundle is not known yet, and the probe imports nothing
+/// a project could shadow), plus the project directory for pyenv.
 pub fn probe_env(base: Vec<(String, String)>, os: Os, project_dir: &str) -> Vec<(String, String)> {
     let mut env = python_env(base, os, None);
     env.push((PYENV_DIR_VAR.to_string(), project_dir.to_string()));
@@ -544,7 +565,7 @@ mod tests {
     #[test]
     fn probe_output_parses_on_every_python() {
         assert_eq!(
-            parse_probe("3 12\n/usr/bin/python3.12\n").unwrap(),
+            parse_probe("pyta-probe 3 12\npyta-exe /usr/bin/python3.12\n").unwrap(),
             Probed {
                 version: PythonVersion {
                     major: 3,
@@ -554,36 +575,59 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_probe("3 13\r\nC:\\Program Files\\Python313\\python.exe\r\n")
+            parse_probe("pyta-probe 3 13\r\npyta-exe C:\\Program Files\\Python313\\python.exe\r\n")
                 .unwrap()
                 .executable
                 .as_deref(),
             Some("C:\\Program Files\\Python313\\python.exe")
         );
-        let old = parse_probe("(2, 7)\r\n").unwrap();
+        // Python 2 prints each line as a tuple.
+        let old =
+            parse_probe("('pyta-probe', 2, 7)\r\n('pyta-exe', '/usr/bin/python')\r\n").unwrap();
         assert_eq!(old.version, PythonVersion { major: 2, minor: 7 });
-        assert_eq!(old.executable, None);
+        assert_eq!(old.executable.as_deref(), Some("/usr/bin/python"));
+        // Whatever site or a .pth file prints first is ignored.
+        let noisy =
+            parse_probe("loaded 3 hooks in 0.2s\npyta-probe 3 11\npyta-exe /opt/py/bin/python3\n")
+                .unwrap();
+        assert_eq!(
+            noisy.version,
+            PythonVersion {
+                major: 3,
+                minor: 11
+            }
+        );
+        assert_eq!(noisy.executable.as_deref(), Some("/opt/py/bin/python3"));
+        assert_eq!(parse_probe("pyta-probe 3 10\n").unwrap().executable, None);
         assert!(parse_probe("").is_err());
-        assert!(parse_probe("Python\n").is_err());
+        assert!(parse_probe("Python 3.12.1\n").is_err());
+        assert!(parse_probe("pyta-probe three\n").is_err());
     }
 
     #[test]
     fn a_single_file_worktree_stands_for_its_directory() {
         assert_eq!(
-            project_dir("/home/me/csc148/a1/tally.py"),
+            project_dir("/home/me/csc148/a1/tally.py", true),
             "/home/me/csc148/a1"
         );
+        assert_eq!(project_dir("/home/me/bin/deploy", true), "/home/me/bin");
         assert_eq!(
-            project_dir("C:\\Users\\me\\a1\\tally.PY"),
+            project_dir("C:\\Users\\me\\a1\\tally.PY", true),
             "C:\\Users\\me\\a1"
         );
-        assert_eq!(project_dir("/home/me/csc148/a1"), "/home/me/csc148/a1");
-        assert_eq!(project_dir("/home/me/csc148/a1/"), "/home/me/csc148/a1/");
-        assert_eq!(project_dir("/tally.py"), "/");
-        assert_eq!(project_dir("C:\\tally.py"), "C:\\");
-        assert_eq!(project_dir("tally.py"), "tally.py");
         assert_eq!(
-            venv_python("/home/me/a1/tally.py", Os::Linux),
+            project_dir("/home/me/code/discord.py", false),
+            "/home/me/code/discord.py"
+        );
+        assert_eq!(
+            project_dir("/home/me/csc148/a1/", false),
+            "/home/me/csc148/a1/"
+        );
+        assert_eq!(project_dir("/tally.py", true), "/");
+        assert_eq!(project_dir("C:\\tally.py", true), "C:\\");
+        assert_eq!(project_dir("tally.py", true), "tally.py");
+        assert_eq!(
+            venv_python("/home/me/a1", Os::Linux),
             "/home/me/a1/.venv/bin/python"
         );
     }
@@ -591,35 +635,61 @@ mod tests {
     #[test]
     fn the_executable_to_start_falls_back_to_the_probed_path() {
         assert_eq!(
-            executable_to_start("/usr/bin/python3", Some("/opt/py/bin/python3.12\n")),
+            executable_to_start(
+                "/usr/bin/python3",
+                Some("/opt/py/bin/python3.12\n"),
+                Os::Linux
+            ),
             "/opt/py/bin/python3.12"
         );
         assert_eq!(
             executable_to_start(
                 "C:\\py\\python.exe",
-                Some("C:\\Users\\Jos\u{FFFD}\\python.exe")
+                Some("C:\\Users\\Jos\u{FFFD}\\python.exe"),
+                Os::Windows
             ),
             "C:\\py\\python.exe"
         );
         assert_eq!(
-            executable_to_start("/usr/bin/python3", Some("")),
+            executable_to_start("/usr/bin/python3", Some(""), Os::Linux),
             "/usr/bin/python3"
         );
         assert_eq!(
-            executable_to_start("/usr/bin/python3", Some("python3")),
+            executable_to_start("/usr/bin/python3", Some("python3"), Os::Linux),
             "/usr/bin/python3"
         );
         assert_eq!(
-            executable_to_start("/usr/bin/python3", None),
+            executable_to_start("/usr/bin/python3", None, Os::Mac),
             "/usr/bin/python3"
         );
         assert_eq!(
-            executable_to_start("C:\\py\\python.exe", Some("C:/Python312/python.exe")),
+            executable_to_start(
+                "C:\\py\\python.exe",
+                Some("C:/Python312/python.exe"),
+                Os::Windows
+            ),
             "C:/Python312/python.exe"
         );
         assert_eq!(
-            executable_to_start("C:\\py\\python.exe", Some("\\\\server\\share\\python.exe")),
+            executable_to_start(
+                "C:\\py\\python.exe",
+                Some("\\\\server\\share\\python.exe"),
+                Os::Windows
+            ),
             "\\\\server\\share\\python.exe"
+        );
+        // An MSYS2 Python answers with a POSIX path that Windows cannot start.
+        assert_eq!(
+            executable_to_start(
+                "C:\\msys64\\usr\\bin\\python3.exe",
+                Some("/usr/bin/python3"),
+                Os::Windows
+            ),
+            "C:\\msys64\\usr\\bin\\python3.exe"
+        );
+        assert_eq!(
+            executable_to_start("/usr/bin/python3", Some("C:\\py\\python.exe"), Os::Linux),
+            "/usr/bin/python3"
         );
     }
 
