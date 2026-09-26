@@ -149,6 +149,14 @@ def test_extract_refuses_entries_outside_libs(tmp_path: Path) -> None:
             tar.addfile(info, io.BytesIO(b""))
         with pytest.raises(SystemExit, match="outside libs/"):
             bundle.extract_tarball(tarball, tmp_path / "out")
+    tarball = tmp_path / "backslash.tar.gz"
+    with tarfile.open(tarball, "w:gz") as tar:
+        # Fine on POSIX as a literal name, a traversal on Windows without the data filter.
+        info = tarfile.TarInfo("libs/..\\..\\evil.py")
+        info.size = 0
+        tar.addfile(info, io.BytesIO(b""))
+    with pytest.raises(SystemExit, match="backslash"):
+        bundle.extract_tarball(tarball, tmp_path / "out")
     tarball = tmp_path / "link.tar.gz"
     with tarfile.open(tarball, "w:gz") as tar:
         info = tarfile.TarInfo("libs/mod.py")
@@ -197,6 +205,28 @@ def test_initialize_round_trip_from_a_directory_that_shadows_json(tmp_path: Path
 
     assert result["serverInfo"]["name"] == "pyta-lsp"
     assert "pyta.check" in result["capabilities"]["executeCommandProvider"]["commands"]
+
+
+def test_the_launcher_survives_stdlib_names_at_the_project_root_on_any_python(tmp_path: Path) -> None:
+    # With -m the start directory is on sys.path before runpy imports anything, so
+    # on 3.10 (and on every version without PYTHONSAFEPATH) a types.py at the
+    # project root is imported in place of the standard library one and the server
+    # dies before the guard in __main__ runs. The -c launcher imports nothing
+    # until the start directory is gone.
+    import os
+    import sys
+
+    bundle = _load()
+    project = tmp_path / "project"
+    project.mkdir()
+    for name in ("types.py", "operator.py", "json.py", "__future__.py"):
+        (project / name).write_text(f"raise RuntimeError('the project {name} was imported')\n", encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONSAFEPATH"}
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    result = bundle.initialize_round_trip(sys.executable, project, env, args=("-c", bundle.SERVER_LAUNCHER))
+
+    assert result["serverInfo"]["name"] == "pyta-lsp"
 
 
 def test_initialize_round_trip_reports_a_server_that_dies(tmp_path: Path) -> None:

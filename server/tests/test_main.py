@@ -83,14 +83,31 @@ def test_drop_cwd_from_path_treats_the_empty_entry_as_the_cwd(tmp_path, monkeypa
     assert path == ["/somewhere/else"]
 
 
-def test_drop_cwd_from_path_defers_to_safe_path(tmp_path, monkeypatch) -> None:
-    # With PYTHONSAFEPATH the interpreter never added the cwd, so an entry equal to
-    # it was put there on purpose by whoever launched us.
+def test_drop_cwd_from_path_strips_the_cwd_even_under_safe_path(tmp_path, monkeypatch) -> None:
+    # PYTHONSAFEPATH only stops the interpreter adding the cwd itself. A project
+    # root that arrives through PYTHONPATH (export PYTHONPATH=$PWD is common
+    # course advice) still outranks the standard library, and this process never
+    # needs the project on its path.
     from pyta_lsp.__main__ import drop_cwd_from_path
 
     monkeypatch.setattr("sys.flags", type("Flags", (), {"safe_path": True})())
-    path = [str(tmp_path)]
+    other = str(tmp_path / "elsewhere")
+    path = [other, str(tmp_path)]
 
     drop_cwd_from_path(str(tmp_path), path)
 
-    assert path == [str(tmp_path)]
+    assert path == [other]
+
+
+def test_main_logs_a_notice_from_the_editor(monkeypatch, caplog) -> None:
+    # The Zed extension has no log of its own, so what it wants the user to know
+    # about the server it picked rides in on an environment variable.
+    from pyta_lsp import __main__ as entry
+
+    monkeypatch.setattr("pyta_lsp.server.server", _FakeServer())
+    monkeypatch.setenv("PYTA_LSP_NOTICE", "Using the earlier download for now.")
+    with caplog.at_level(logging.INFO, logger="pyta_lsp"):
+        entry.main()
+
+    notices = [r for r in caplog.records if "earlier download" in r.getMessage()]
+    assert notices and notices[0].levelno == logging.WARNING

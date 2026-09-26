@@ -33,6 +33,14 @@ PYPROJECT = SERVER / "pyproject.toml"
 DIST = ROOT / "dist"
 # Editors that download the server look for a release asset with this prefix.
 TARBALL_PREFIX = "pyta-lsp-server-"
+# How an editor should start the server from a project root: `python -c` with this
+# line. With `python -m pyta_lsp` the start directory is on sys.path before runpy
+# imports anything, so a types.py at the root shadows the standard library on 3.10
+# and on any version without PYTHONSAFEPATH. This takes the directory out first and
+# imports nothing until it has. zed/src/logic.rs holds the same line, and a cargo
+# test keeps the two equal.
+SERVER_LAUNCHER = "import os, sys; here = os.path.normcase(os.getcwd()); sys.path[:] = [p for p in sys.path if p and os.path.normcase(os.path.abspath(p)) != here]; import runpy; runpy.run_module('pyta_lsp', run_name='__main__', alter_sys=True)"
+SERVER_ARGS = ("-m", "pyta_lsp")
 MIN_PY = "3.10"
 # No pure wheels on PyPI so we build these from sdist with the extensions off.
 SDIST_ONLY = {"aiohttp", "markupsafe"}
@@ -330,6 +338,10 @@ def extract_tarball(tarball: Path, into: Path) -> Path:
             parts = PurePosixPath(member.name).parts
             if member.name.startswith("/") or ".." in parts or parts[:1] != ("libs",):
                 raise SystemExit(f"{tarball.name} has an entry outside libs/: {member.name}")
+            if "\\" in member.name:
+                # A literal name on POSIX, but a separator on Windows, where the
+                # interpreters without the data filter would follow it.
+                raise SystemExit(f"{tarball.name} has an entry with a backslash in its name: {member.name}")
             if not (member.isfile() or member.isdir()):
                 raise SystemExit(f"{tarball.name} has an entry that is not a file or directory: {member.name}")
         if hasattr(tarfile, "data_filter"):
@@ -361,15 +373,26 @@ def _messages(data: bytes) -> list[dict[str, Any]]:
 
 
 def initialize_round_trip(
-    python: str, cwd: Path, env: dict[str, str], timeout: float = 60.0
+    python: str,
+    cwd: Path,
+    env: dict[str, str],
+    timeout: float = 60.0,
+    args: tuple[str, ...] = SERVER_ARGS,
 ) -> dict[str, Any]:
     """Start the server in cwd, initialize it, shut it down, and return the initialize result.
 
     Everything goes down the pipe at once and the reply is read after the server
     exits, so no thread has to babysit a read with a timeout.
+
+    Args:
+        python: the interpreter to start.
+        cwd: where to start it, the project root as far as an editor is concerned.
+        env: the whole environment the server gets.
+        timeout: seconds before the server is killed and the check fails.
+        args: how the interpreter finds the server, `-m pyta_lsp` or the launcher.
     """
     proc = subprocess.Popen(
-        [python, "-m", "pyta_lsp"],
+        [python, *args],
         cwd=cwd,
         env=env,
         stdin=subprocess.PIPE,
@@ -428,17 +451,33 @@ def cmd_check_tarball(tarball: Path) -> int:
             "print('tarball ok: pyta_lsp', pyta_lsp.__version__, '| python-ta', python_ta.__version__)"
         )
         run([sys.executable, "-c", code, str(libs)], cwd=tmp, env=env)
-        # The project root an editor starts the server from, holding the worst file
-        # a student can put there.
+        # The project root an editor starts the server from, holding the worst files
+        # a student can put there. json.py is imported after the guard in __main__,
+        # types.py and operator.py are imported by runpy itself, before it.
         project = Path(tmp) / "project"
         project.mkdir()
-        (project / "json.py").write_text("raise RuntimeError('the project json.py was imported')\n", encoding="utf-8")
-        result = initialize_round_trip(sys.executable, project, env)
-        name = result.get("serverInfo", {}).get("name")
-        if name != "pyta-lsp":
-            raise SystemExit(f"unexpected server: {result.get('serverInfo')}")
-        print(f"initialize ok: {name} {result['serverInfo'].get('version')} from {project}")
+        for name in ("json.py", "types.py", "operator.py"):
+            (project / name).write_text(f"raise RuntimeError('the project {name} was imported')\n", encoding="utf-8")
+        # An editor that uses -m has to set PYTHONSAFEPATH and lives with the 3.10
+        # residual, so that check keeps to json.py from a root of its own.
+        plain = Path(tmp) / "plain"
+        plain.mkdir()
+        (plain / "json.py").write_text("raise RuntimeError('the project json.py was imported')\n", encoding="utf-8")
+        _expect_server(initialize_round_trip(sys.executable, plain, env), f"-m from {plain}")
+        # The launcher has to hold up with nothing but PYTHONPATH set, on every Python.
+        bare = {k: v for k, v in env.items() if k != "PYTHONSAFEPATH"}
+        _expect_server(
+            initialize_round_trip(sys.executable, project, bare, args=("-c", SERVER_LAUNCHER)),
+            f"launcher from {project}",
+        )
     return 0
+
+
+def _expect_server(result: dict[str, Any], how: str) -> None:
+    info = result.get("serverInfo") or {}
+    if info.get("name") != "pyta-lsp":
+        raise SystemExit(f"unexpected server ({how}): {info}")
+    print(f"initialize ok ({how}): pyta-lsp {info.get('version')}")
 
 
 def main(argv: list[str] | None = None) -> int:

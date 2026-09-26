@@ -43,8 +43,20 @@ async def quiet_client(lsp_client: LanguageClient) -> AsyncGenerator[None, None]
     await lsp_client.shutdown_session()
 
 
-def _client_started_in_a_shadowing_directory() -> LanguageClient:
-    """A client whose server starts from a directory holding a json.py.
+def _launcher() -> str:
+    """The -c line the Zed extension starts the server with, from scripts/bundle.py."""
+    import importlib.util
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "bundle.py"
+    spec = importlib.util.spec_from_file_location("bundle", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module.SERVER_LAUNCHER
+
+
+def _client_started_in_a_shadowing_directory(names: tuple[str, ...] = ("json.py",)) -> LanguageClient:
+    """A client whose server starts from a directory holding files named after stdlib modules.
 
     Zed starts language servers at the project root, and nothing stops a
     student from keeping a file named after a standard library module there.
@@ -52,7 +64,8 @@ def _client_started_in_a_shadowing_directory() -> LanguageClient:
     client = pytest_lsp.make_test_lsp_client()
     root = Path(tempfile.mkdtemp(prefix="pyta-lsp-shadow-"))
     atexit.register(shutil.rmtree, root, ignore_errors=True)
-    (root / "json.py").write_text("raise RuntimeError('the project json.py was imported')\n", encoding="utf-8")
+    for name in names:
+        (root / name).write_text(f"raise RuntimeError('the project {name} was imported')\n", encoding="utf-8")
     start_io = client.start_io
 
     async def start_io_in_root(cmd: str, *args, **kwargs) -> None:
@@ -71,6 +84,30 @@ def _client_started_in_a_shadowing_directory() -> LanguageClient:
     )
 )
 async def shadowed_client(lsp_client: LanguageClient) -> AsyncGenerator[None, None]:
+    await lsp_client.initialize_session(
+        types.InitializeParams(
+            capabilities=types.ClientCapabilities(),
+            root_uri=FIXTURES.as_uri(),
+            initialization_options={"runOnOpen": True, "runOnSave": True, "configPath": ""},
+        )
+    )
+    yield
+    await lsp_client.shutdown_session()
+
+
+def _client_in_a_root_full_of_stdlib_names() -> LanguageClient:
+    return _client_started_in_a_shadowing_directory(("types.py", "operator.py", "json.py"))
+
+
+# No PYTHONSAFEPATH here on purpose: the launcher has to hold up without it.
+@pytest_lsp.fixture(
+    config=ClientServerConfig(
+        server_command=[sys.executable, "-c", _launcher()],
+        client_factory=_client_in_a_root_full_of_stdlib_names,
+        server_env={k: v for k, v in os.environ.items() if k != "PYTHONSAFEPATH"} | {"PYTHONUTF8": "1"},
+    )
+)
+async def launched_client(lsp_client: LanguageClient) -> AsyncGenerator[None, None]:
     await lsp_client.initialize_session(
         types.InitializeParams(
             capabilities=types.ClientCapabilities(),
@@ -126,6 +163,25 @@ async def test_the_server_checks_from_a_project_root_that_shadows_the_stdlib(
 
     codes = {d.code for d in shadowed_client.diagnostics[uri]}
     assert FAILURE_CODE not in codes, [d.message for d in shadowed_client.diagnostics[uri]]
+    assert "E9989" in codes
+
+
+async def test_the_launcher_checks_from_a_root_full_of_stdlib_names(
+    launched_client: LanguageClient,
+) -> None:
+    # The Zed extension starts the server with the -c launcher in the project root.
+    # types.py and operator.py are imported by runpy before __main__ could strip
+    # anything, so only a launcher that clears the path first survives them.
+    from pyta_lsp.diagnostics import FAILURE_CODE
+
+    root = launched_client.server_root  # type: ignore[attr-defined]
+    assert (root / "types.py").is_file()
+
+    uri = _open(launched_client, "course_style.py")
+    await launched_client.wait_for_notification(types.TEXT_DOCUMENT_PUBLISH_DIAGNOSTICS)
+
+    codes = {d.code for d in launched_client.diagnostics[uri]}
+    assert FAILURE_CODE not in codes, [d.message for d in launched_client.diagnostics[uri]]
     assert "E9989" in codes
 
 

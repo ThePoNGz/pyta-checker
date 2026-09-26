@@ -6,15 +6,15 @@ import sys
 
 
 def drop_cwd_from_path(cwd: str | None = None, path: list[str] = sys.path) -> None:
-    """Take the directory `python -m` put at the front of sys.path back out.
+    """Take the start directory out of sys.path, wherever it came from.
 
-    An editor starts the server from the project root, and on 3.10 there is no
-    PYTHONSAFEPATH, so a student file called json.py at that root would be imported
-    in place of the standard library one. This runs before anything the server
-    needs gets imported, so the shadowing never happens.
+    An editor starts the server from the project root. On 3.10 `python -m` puts
+    that root first on sys.path, and on any version a PYTHONPATH from the shell
+    can hold it, so a student file called json.py there would be imported in
+    place of the standard library one. This process never needs the project on
+    its path. What runpy imports before this runs (types, operator and a few
+    more) is only covered by the -c launcher in scripts/bundle.py.
     """
-    if getattr(sys.flags, "safe_path", False):
-        return
     target = os.path.normcase(os.path.abspath(os.getcwd() if cwd is None else cwd))
     for entry in [p for p in path if os.path.normcase(os.path.abspath(p or os.curdir)) == target]:
         path.remove(entry)
@@ -42,8 +42,13 @@ def main(argv: list[str] | None = None) -> int:
     from . import __version__
     from .server import server
 
-    # Editors that pick the interpreter themselves show this in their server log.
-    logging.getLogger("pyta_lsp").info("pyta-lsp %s running under %s", __version__, sys.executable)
+    # Editors that pick the interpreter themselves show this in their server log,
+    # and the Zed extension passes anything else the user should know the same way.
+    log = logging.getLogger("pyta_lsp")
+    log.info("pyta-lsp %s running under %s", __version__, sys.executable)
+    notice = os.environ.get("PYTA_LSP_NOTICE")
+    if notice:
+        log.warning("%s", notice)
 
     try:
         server.start_io()
