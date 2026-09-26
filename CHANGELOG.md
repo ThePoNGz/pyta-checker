@@ -4,7 +4,7 @@
 
 - Zed extension in `zed/`, installed as a dev extension until it is in the Zed registry. It downloads the server from the GitHub release and finds Python 3.10+ on its own; `lsp.pyta-lsp.settings.interpreter` picks a specific one.
 - Each release now also attaches `pyta-lsp-server-<version>.tar.gz`: the checker and PythonTA as one `libs` directory, for Zed and any other LSP editor.
-- The server can be started from any directory, including a project root holding a file named after a standard-library module, on every supported Python, when started the way the Zed extension does (the `SERVER_LAUNCHER` line in `scripts/bundle.py`). The VS Code extension has always started the server inside its own folder, so it needs no change there.
+- The server can be started from any directory, including a project root holding a file named after a standard-library module, on every supported Python, when started the way the Zed extension does (the `SERVER_LAUNCHER` string in `scripts/bundle.py`), and when that root is the directory the server starts in. The VS Code extension has always started the server inside its own folder, so it needs no change there.
 - On Python 3.10, a module inside a package is checked even when the package folder holds a student file named after a standard-library module such as `types.py`; before, every check of that file failed. This applies to the VS Code extension too.
 
 ## 0.1.0 — 2026-09-22
