@@ -104,8 +104,10 @@ pub fn join(base: &str, tail: &str, os: Os) -> String {
 /// root is that file, and pyenv aborts when PYENV_DIR is not a directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProjectRoot {
-    /// Always a directory, so pyenv can change into it.
-    pub pyenv_dir: String,
+    /// What to hand pyenv as PYENV_DIR, in order: the root itself first when it
+    /// may be a directory, then its parent, which always is one. The probe is
+    /// rerun with the next entry when a shim refuses the first.
+    pub pyenv_dirs: Vec<String>,
     /// Where a .venv is looked for, in order.
     pub venv_bases: Vec<String>,
 }
@@ -114,25 +116,29 @@ pub struct ProjectRoot {
 /// the root as a text file. Reading succeeds for a UTF-8 file and fails for a
 /// directory, but also for a file in another encoding, and a name proves nothing
 /// either way: a directory can be called discord.py and a script can have no
-/// suffix. So an unreadable root with a Python name is treated as either, with
-/// the parent for pyenv since that is a directory whichever it is.
+/// suffix. So an unreadable root is tried as a directory first and as a file
+/// second: pyenv gets the root, then the parent if a shim refused it, and a
+/// .venv is looked for in both places when the name says it may be a file.
 pub fn project_root(worktree_root: &str, root_is_readable_file: bool) -> ProjectRoot {
     let parent = parent_dir(worktree_root);
     if root_is_readable_file {
         return ProjectRoot {
-            pyenv_dir: parent.clone(),
+            pyenv_dirs: vec![parent.clone()],
             venv_bases: vec![parent],
         };
     }
-    if looks_like_python_file(worktree_root) {
-        return ProjectRoot {
-            pyenv_dir: parent.clone(),
-            venv_bases: vec![worktree_root.to_string(), parent],
-        };
-    }
+    let venv_bases = if looks_like_python_file(worktree_root) {
+        vec![worktree_root.to_string(), parent.clone()]
+    } else {
+        vec![worktree_root.to_string()]
+    };
     ProjectRoot {
-        pyenv_dir: worktree_root.to_string(),
-        venv_bases: vec![worktree_root.to_string()],
+        pyenv_dirs: if parent == worktree_root {
+            vec![worktree_root.to_string()]
+        } else {
+            vec![worktree_root.to_string(), parent]
+        },
+        venv_bases,
     }
 }
 
@@ -656,17 +662,32 @@ mod tests {
     #[test]
     fn a_single_file_worktree_stands_for_its_directory() {
         let file = project_root("/home/me/csc148/a1/tally.py", true);
-        assert_eq!(file.pyenv_dir, "/home/me/csc148/a1");
+        assert_eq!(file.pyenv_dirs, vec!["/home/me/csc148/a1".to_string()]);
         assert_eq!(file.venv_bases, vec!["/home/me/csc148/a1".to_string()]);
         let script = project_root("/home/me/bin/deploy", true);
-        assert_eq!(script.pyenv_dir, "/home/me/bin");
+        assert_eq!(script.pyenv_dirs, vec!["/home/me/bin".to_string()]);
+        // A directory root is tried as itself first, and its parent only if a
+        // pyenv shim refuses it, which happens when the root was really a file
+        // Zed could not read as UTF-8.
         let dir = project_root("/home/me/csc148/a1", false);
-        assert_eq!(dir.pyenv_dir, "/home/me/csc148/a1");
+        assert_eq!(
+            dir.pyenv_dirs,
+            vec![
+                "/home/me/csc148/a1".to_string(),
+                "/home/me/csc148".to_string()
+            ]
+        );
         assert_eq!(dir.venv_bases, vec!["/home/me/csc148/a1".to_string()]);
         // Unreadable and named like a Python file: a cp1252 script, or a directory
-        // called discord.py. pyenv gets a directory either way, and both venvs are tried.
+        // called discord.py. pyenv is tried with the root first, and both venvs.
         let either = project_root("/home/me/code/discord.py", false);
-        assert_eq!(either.pyenv_dir, "/home/me/code");
+        assert_eq!(
+            either.pyenv_dirs,
+            vec![
+                "/home/me/code/discord.py".to_string(),
+                "/home/me/code".to_string()
+            ]
+        );
         assert_eq!(
             either.venv_bases,
             vec![
@@ -675,9 +696,10 @@ mod tests {
             ]
         );
         assert_eq!(
-            project_root("C:\\Users\\me\\a1\\tally.PY", true).pyenv_dir,
-            "C:\\Users\\me\\a1"
+            project_root("C:\\Users\\me\\a1\\tally.PY", true).pyenv_dirs,
+            vec!["C:\\Users\\me\\a1".to_string()]
         );
+        assert_eq!(project_root("/", false).pyenv_dirs, vec!["/".to_string()]);
         assert_eq!(parent_dir("/tally.py"), "/");
         assert_eq!(parent_dir("C:\\tally.py"), "C:\\");
         assert_eq!(parent_dir("tally.py"), "tally.py");

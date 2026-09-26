@@ -112,7 +112,12 @@ impl PytaExtension {
         // Reading the root entry itself succeeds for a single UTF-8 file worktree
         // and fails for a directory, which is how Zed tells us which one this is.
         let project = project_root(&root, worktree.read_text_file("").is_ok());
-        let env = probe_env(worktree.shell_env(), os, &project.pyenv_dir);
+        let shell_env = worktree.shell_env();
+        let envs: Vec<Vec<(String, String)>> = project
+            .pyenv_dirs
+            .iter()
+            .map(|dir| probe_env(shell_env.clone(), os, dir))
+            .collect();
         let candidates = interpreter_candidates(settings, &project.venv_bases, os);
         choose_interpreter(&candidates, |candidate| {
             // A bare name is looked up here, because Zed would otherwise treat the
@@ -122,10 +127,19 @@ impl PytaExtension {
                 Candidate::Configured(value) if is_bare_name(value) => worktree.which(value),
                 Candidate::Configured(path) | Candidate::Venv(path) => Some(path.clone()),
             };
-            match python {
-                Some(python) => probe(&python, &env),
-                None => ProbeOutcome::Missing,
+            let Some(python) = python else {
+                return ProbeOutcome::Missing;
+            };
+            // A pyenv shim refuses a PYENV_DIR that is not a directory, so the
+            // next entry, the parent, gets a turn before the candidate is given up.
+            let mut outcome = ProbeOutcome::Missing;
+            for env in &envs {
+                outcome = probe(&python, env);
+                if !matches!(outcome, ProbeOutcome::Failed(_)) {
+                    break;
+                }
             }
+            outcome
         })
     }
 
