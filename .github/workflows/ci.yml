@@ -159,3 +159,8 @@ jobs:
       - run: cargo clippy --manifest-path zed/Cargo.toml --all-targets -- -D warnings
       - run: cargo test --manifest-path zed/Cargo.toml
       - run: cargo build --manifest-path zed/Cargo.toml --release --target wasm32-wasip2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zed-extension-wasm
+          path: zed/target/wasm32-wasip2/release/pyta_lsp_zed.wasm
+          if-no-files-found: error
